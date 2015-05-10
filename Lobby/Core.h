@@ -11,9 +11,6 @@
 #include "Net.h"
 #include "Utils.h"
 
-#define ADMIN_TXT_FILE "admins.txt"
-#define ACCOUNT_TXT_FILE "users.txt"
-
 #define MAX_PLAYER_PER_IP 10
 #define GAME_START_ID 10201
 #define MAX_GAMES_PER_IP 1
@@ -27,9 +24,12 @@ uint16_t GeneratePlayerID();
 uint32_t GenerateGameID();
 
 void ServerInit();
+void Stop();
+
 void CreateListener(boost::asio::io_service &service);
 void StartAccept();
 void AcceptCallback(CNet *net);
+
 void Analyze(uint8_t *data, uint32_t size, CNet *net);
 
 enum EGameResponse
@@ -92,6 +92,23 @@ public:
 
 		memset(&m_Rank, 0x00, sizeof(uint32_t) * 7);
 		m_Connection->BindUser(this);
+	}
+
+	void Create(CNet *net, std::string ip)
+	{
+		m_Connection = net;
+		m_Ip = ip;
+		m_Game = NULL;
+		m_Status = STATUS_PLAYER;
+		m_ChatCount = 0;
+		m_FirstChatTime = 0;
+		m_Id = -1;
+		m_IGameId = -1;
+		m_GameId = -1;
+		m_Allocated = false;
+		m_ChatBlockEnd = 0;
+
+		Initialize();
 	}
 
 	void Update();

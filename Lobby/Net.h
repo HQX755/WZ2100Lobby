@@ -35,9 +35,13 @@ private:
 	CUser *m_User;
 
 public:
-	CNet(boost::asio::io_service &service) : m_Service(service), m_Socket(service),
-		m_OutputBuffer(boost::asio::streambuf(0)), m_LastOutputSize(0),
-		m_LastInputSize(0), bInterrupt(false), m_User(NULL)
+	CNet(boost::asio::io_service &service) : 
+		m_Service(service), 
+		m_Socket(service),
+		m_LastOutputSize(0),
+		m_LastInputSize(0), 
+		bInterrupt(false), 
+		m_User(NULL)
 	{
 		Initialize();
 	}

@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "Core.h"
 #include "Packets.h"
+#include "Allocation.h"
 
 CCore *sv;
 CConsole *cmd;
@@ -55,6 +56,13 @@ void ServerInit()
 	cmd->Run();
 }
 
+void Stop()
+{
+	delete listener;
+	delete sv;
+	delete cmd;
+}
+
 CCore *CORE()
 {
 	return sv;
@@ -100,6 +108,7 @@ void AcceptCallback(CNet *net)
 	net->Start();
 
 	CUser *user = new CUser(net, ip);
+
 	sv->AddUser(user);
 	StartAccept();
 }
@@ -116,7 +125,6 @@ void StartAccept()
 
 void Analyze(uint8_t *data, uint32_t size, CNet *net)
 {
-	uint16_t *Tmp = NULL;
 	CUser *user = net->GetUser();
 
 	if(!user)

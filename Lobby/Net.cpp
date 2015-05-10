@@ -30,7 +30,7 @@ void CNet::WaitForHandlerCompletion()
 		}
 		if(count == 4)
 		{
-			delete this;
+			allocator_.deallocate(this);
 		}
 		else
 		{
@@ -205,7 +205,8 @@ CUser *CNet::GetUser()
 void CListener::Start()
 	{
 		NET = new CNet(MainService);
-		Acceptor.async_accept(NET->GetSocket(), make_custom_alloc_handler(m_Allocator, boost::bind(&CListener::HandleAccept, this, boost::asio::placeholders::error)));
+		Acceptor.async_accept(NET->GetSocket(), make_custom_alloc_handler(m_Allocator, boost::bind(&CListener::HandleAccept, 
+			this, boost::asio::placeholders::error)));
 	}
 
 void CListener::HandleAccept(const boost::system::error_code &ec)
@@ -213,6 +214,7 @@ void CListener::HandleAccept(const boost::system::error_code &ec)
 		if(!ec)
 		{
 			printf("New Connection from: %s\n", NET->GetSocket().remote_endpoint().address().to_string().c_str());
+
 			AcceptCallback(NET);
 		}
 		else

@@ -3,14 +3,16 @@
 #include <map>
 #include <boost/thread.hpp>
 #include <boost/aligned_storage.hpp>
+#include <boost/make_shared.hpp>
 
 class CAlloc : private boost::noncopyable
 {
 private:
 	boost::aligned_storage<1024*4> m_Storage;
+	void *p;
 
 public:
-	CAlloc()
+	CAlloc() : p(NULL)
 	{
 	}
 
@@ -20,17 +22,17 @@ public:
 
 	void *allocate(size_t s)
 	{
-		return (m_Storage.address = ::operator new(s));
+		return (p = ::operator new(s));
 	}
 
 	void deallocate()
 	{
-		operator delete(m_Storage.address);
+		operator delete(p);
 	}
 };
 
-typedef std::map<void *, void *> TAllocationMap;
-typedef std::map<void *, CAlloc*> _TAllocationMap;
+typedef std::map<std::pair<void *, int>, void *> TAllocationMap;
+typedef std::map<void *, int> _TAllocationMap;
 
 class CAllocManager
 {
@@ -44,42 +46,72 @@ private:
 public:
 	CAllocManager()
 	{
+		boost::thread t(boost::bind(&CAllocManager::Loop, this));
 	}
 
 	void Loop()
 	{
 		while(true)
 		{
-			for(std::map<void *,void *>::iterator it = m_AllocationList.begin(); it != m_AllocationList.end(); ++it)
+			for(TAllocationMap::iterator it = m_AllocationList.begin(); it != m_AllocationList.end(); ++it)
 			{
-				it->second = (new CAlloc())->allocate(2048);
-				while(it->first != NULL)
+				if(it->second == NULL)
 				{
+					it->second = malloc(it->first.second);
+					memset(it->second, 0, it->first.second);
+					m_Allocations.insert(_TAllocationMap::value_type(it->second, it->first.second));
+
 					m_Condition.notify_all();
 				}
 			}
-			for(std::map<void*, CAlloc*>::iterator it = m_Allocations.begin(); it != m_Allocations.end(); ++it)
+			for(_TAllocationMap::iterator it = m_Allocations.begin(); it != m_Allocations.end(); ++it)
 			{
-				if(it->first == NULL)
+				if(it->second == 0)
 				{
-					it->second->deallocate();
-					delete it->second;
+					delete [] it->first;
 					m_Allocations.erase(it);
 				}
 			}
 		}
 	}
 
-	void* Push(void *Call)
+	void Pop(void *call)
+	{
+		boost::unique_lock<boost::mutex> Lock(m_Mutex);
+
+		int size = 0;
+		for(TAllocationMap::iterator it = m_AllocationList.begin(); it != m_AllocationList.end(); ++it)
+		{
+			if(it->first.first == call)
+			{
+				size = it->first.second;
+				m_AllocationList.erase(it);
+
+				m_Allocations.insert(_TAllocationMap::value_type(call, size));
+				break;
+			}
+		}
+	}
+	
+	void* Push(void *call, int size)
 	{
 		try
 		{
-			boost::unique_lock<boost::mutex> tryLock(m_Mutex);
+			boost::unique_lock<boost::mutex> Lock(m_Mutex);
 
-			auto it = m_AllocationList.insert(std::make_pair(Call, NULL));
-			m_Condition.wait(tryLock);
+			void **v = new void*;
+			memcpy(v, &call, sizeof(int));
 
-			return (void*)it.second;
+			//::unique_lock<boost::mutex> tryLock(m_Mutex);
+
+			auto it = m_AllocationList.insert(TAllocationMap::value_type(std::make_pair<void*, int>(call, size), (void*)NULL));
+
+			while(it.first->second == NULL)
+			{
+				m_Condition.wait(Lock);
+			}
+
+			return it.first->second;
 		} catch(std::exception &e)
 		{
 			(void)e.what();
@@ -91,11 +123,14 @@ public:
 	template<typename T>
 	T *NEW(void *Caller)
 	{
-		return (T*)Push(Caller);
+		//boost::shared_ptr<boost::unique_lock<boost::mutex>> tryLock = boost::make_shared<boost::unique_lock<boost::mutex>>(boost::ref(boost::unique_lock<boost::mutex>(m_Mutex)));
+		void *f = Push(Caller, sizeof(T));
+		Pop(Caller);
+		return (T*)f;
 	}
 
 	template<typename T>
-	void DELETE(T *t)
+	void _DELETE(T *t)
 	{
 		try
 		{
@@ -113,3 +148,5 @@ public:
 		}
 	}
 };
+
+CAllocManager AllocationManager;
