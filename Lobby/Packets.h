@@ -26,9 +26,9 @@ enum EPacketHeaders
 
 enum EPacketSubHeaders
 {
-	BAN_PLAYER = 1,
-	BAN_GAME = 2,
-	SEND_NOTICE = 4
+	BAN_PLAYER = 0xFB,
+	BAN_GAME = 0xFE,
+	SEND_NOTICE = 0xFF
 };
 
 struct SShutDownPacket

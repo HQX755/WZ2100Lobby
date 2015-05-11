@@ -183,7 +183,11 @@ void CNet::Stop()
 		printf("Closing connection: %s\n", m_Socket.remote_endpoint().address().to_string().c_str());
 
 		m_Socket.close();
-		CORE()->RemoveConnection(this);
+
+		if(m_User != NULL)
+		{
+			CORE()->RemoveConnection(this);
+		}
 
 		WaitForHandlerCompletion();
 	}

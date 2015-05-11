@@ -91,21 +91,26 @@ void AcceptCallback(CNet *net)
 {
 	std::string ip = net->GetSocket().remote_endpoint().address().to_string().c_str();
 
+	net->Start();
+
 	if(sv->IpIsBlocked(ip))
 	{
 		printf("Blocked IP: %s\n", ip.c_str());
-		delete net;
+		net->Stop();
 		net = NULL;
+
+		StartAccept();
 		return;
 	}
 	if(sv->MaxConnectionsReached(ip))
 	{
-		delete net;
+		printf("Max connections reached.\n");
+		net->Stop();
 		net = NULL;
+
+		StartAccept();
 		return;
 	}
-
-	net->Start();
 
 	CUser *user = new CUser(net, ip);
 
@@ -336,7 +341,7 @@ CHECK_RENAME:
 
 				printf("Received invalid packet. Header: %d", *(uint16_t*)data);
 
-				delete user;
+				sv->RemoveConnection(user);
 				break;
 			}
 		}
@@ -382,13 +387,13 @@ void CUser::Update()
 		if(m_Connection != NULL)
 		{
 			m_Connection->Update();
-		}
 
-		if(GetRunTime() > m_NextRefreshTime)
-		{
-			sv->UpdateUser(this);
+			if(GetRunTime() > m_NextRefreshTime)
+			{
+				sv->UpdateUser(this);
 
-			m_NextRefreshTime = GetRunTime() + 10000;
+				m_NextRefreshTime = GetRunTime() + 10000;
+			}
 		}
 	}
 
@@ -834,7 +839,10 @@ void CCore::SendToAll(uint8_t *data, uint32_t size)
 	{
 		BOOST_FOREACH(CUser *user, UserList)
 		{
-			user->AppendData(data, size);
+			if(user)
+			{
+				user->AppendData(data, size);
+			}
 		}
 	}
 
