@@ -1,3 +1,6 @@
+#ifndef _ALLOC_H_
+#define _ALLOC_H_
+
 #include "stdafx.h"
 #include <deque>
 #include <map>
@@ -150,3 +153,5 @@ public:
 };
 
 CAllocManager AllocationManager;
+
+#endif

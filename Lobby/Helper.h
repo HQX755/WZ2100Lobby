@@ -1,3 +1,6 @@
+#ifndef _HELPER_H_
+#define _HELPER_H_
+
 #include "stdafx.h"
 #include <cstdlib>
 #include <iostream>
@@ -151,3 +154,5 @@ inline _custom_alloc_handler<Handler> _make_custom_alloc_handler(
 {
   return _custom_alloc_handler<Handler>(a, h);
 }
+
+#endif

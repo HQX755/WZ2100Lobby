@@ -81,7 +81,7 @@ uint16_t GeneratePlayerID()
 	return PlayerCount - 1;
 }
 
-uint32_t GenerateGameID()
+uint16_t GenerateGameID()
 {
 	GameCount++;
 	return (GAME_START_ID + GameCount - 1);
@@ -146,6 +146,7 @@ void Analyze(uint8_t *data, uint32_t size, CNet *net)
 				_AddP = *(SNewPPacket*)data;
 				_AddP.header = PLAYER_ADD;
 				_AddP.id = user->GetId();
+				_AddP.status = user->GetStatus();
 
 				int check = sv->CheckUserStatus(std::string(_AddP.Name).c_str());
 				if(check == STATUS_REGISTERED)
@@ -153,6 +154,7 @@ void Analyze(uint8_t *data, uint32_t size, CNet *net)
 					break;
 				}
 
+				bool changed = false;
 				long double count = 1;
 
 CHECK_NAME:
@@ -170,8 +172,16 @@ CHECK_NAME:
 						strcpy_s(_AddP.Name, str.c_str());
 						count++;
 
+						changed = true;
 						goto CHECK_NAME;
 					}
+				}
+				if(changed)
+				{
+					_ChangeName.id = user->GetId();
+					strcpy_s(_ChangeName.name, _AddP.Name);
+
+					user->AppendData(&_ChangeName, sizeof(SChangeNamePacket));
 				}
 
 				_PlayerData.id = user->GetId();
@@ -215,13 +225,14 @@ CHECK_NAME:
 						_AddG.hostId = _game->GetHostID();
 						_AddG.Players = _game->GetPlayerCount();
 						_AddG.MaxPlayers = _game->GetMaxPlayers();
+						_AddG.mapMod = _game->HasMapMod();
+						_AddG.privateGame = _game->IsPrivate();
 					
 						memcpy(&_AddG.MinRank, (void*)_game->GetMinRank(), sizeof(uint32_t) * 7);
 						memcpy(&_AddG.MaxRank, (void*)_game->GetMaxRank(), sizeof(uint32_t) * 7);
 
 						strcpy_s(_AddG.Map, _game->GetMapName().c_str());
 						strcpy_s(_AddG.mods, _game->GetMods().c_str());
-
 						strcpy_s(_AddG.ip, _game->GetHost()->GetIp().c_str());
 
 						user->AppendData(&_AddG, sizeof(SNewGPacket));
@@ -229,7 +240,7 @@ CHECK_NAME:
 				}
 
 				_GameStatus.status = 1;
-				user->AppendData(&_GameStatus, sizeof(uint16_t)*2);
+				user->AppendData(&_GameStatus, sizeof(SGameStatusPacket));
 
 				break;
 			}
@@ -240,17 +251,21 @@ CHECK_NAME:
 					break;
 				}
 
+				user->SetGameStatus(STATUS_PLAYING);
+
 				_AddG = *(SNewGPacket*)data;
 				_AddG.header = GAME_ADD;
 
 				CGame *game = new CGame((std::string(_AddG.Name).c_str()), (std::string(_AddG.Map).c_str()), _AddG.MaxPlayers, (std::string(_AddG.Version).c_str()), 
-					(std::string(_AddG.mods).c_str()), (std::string(_AddG.password).c_str()));
+					(std::string(_AddG.mods).c_str()), (std::string("").c_str()), _AddG.mapMod == 0, _AddG.privateGame == 0);
+
+				_AddG.id = game->GetGameID();
 
 				user->JoinGame(game);
 				sv->AddGame(game);
 
 				_GameHost.gId = game->GetGameID();
-				user->AppendData(&_GameHost, sizeof(uint16_t)*2);
+				user->AppendData(&_GameHost, sizeof(SGameHostPacket));
 
 				sv->SendToAll(&_AddG, sizeof(SNewGPacket));
 
@@ -309,6 +324,12 @@ CHECK_RENAME:
 
 				break;
 			}
+		case REJOIN_LOBBY:
+			{
+				user->SetGameStatus(STATUS_LOBBY);
+
+				break;
+			}
 		default:
 			{
 				sv->BlockIp(user->GetIp());
@@ -358,9 +379,16 @@ void CUser::Update()
 			m_ChatCount = 0;
 		}
 
-		if(m_Connection != NULL && (unsigned int)m_Connection != 0xfeeefeeee)
+		if(m_Connection != NULL)
 		{
 			m_Connection->Update();
+		}
+
+		if(GetRunTime() > m_NextRefreshTime)
+		{
+			sv->UpdateUser(this);
+
+			m_NextRefreshTime = GetRunTime() + 10000;
 		}
 	}
 
@@ -428,10 +456,20 @@ void CUser::SetStatus(EUserAuthority status)
 		m_Status = status;
 	}
 
+void CUser::SetGameStatus(EGameStatus status)
+	{
+		m_GameStatus = status;
+	}
+
 uint8_t CUser::GetStatus()
 	{
 		return m_Status;
-	}	
+	}
+
+uint8_t CUser::GetGameStatus()
+	{
+		return m_GameStatus;
+	}
 
 std::string CUser::GetName()
 	{
@@ -447,7 +485,8 @@ uint16_t CUser::GetIGameId()
 	{
 		return m_IGameId;
 	}
-uint32_t CUser::GetGameId()
+
+uint16_t CUser::GetGameId()
 	{
 		return m_GameId;
 	}
@@ -508,6 +547,7 @@ void CUser::SetGameId(uint16_t Id)
 	{
 		m_GameId = Id;
 	}
+
 void CUser::SetIGameId(uint16_t Id)
 	{
 		m_IGameId = Id;
@@ -554,7 +594,7 @@ uint16_t CGame::GetHostID()
 		}
 	}
 
-uint32_t CGame::GetGameID()
+uint16_t CGame::GetGameID()
 	{
 		return m_GameId;
 	}
@@ -574,12 +614,12 @@ std::string CGame::GetMods()
 		return m_Mods;
 	}
 
-uint32_t CGame::GetMaxPlayers()
+uint8_t CGame::GetMaxPlayers()
 	{
 		return m_MaxPlayers;
 	}
 
-uint32_t CGame::GetPlayerCount()
+uint8_t CGame::GetPlayerCount()
 	{
 		return m_Players;
 	}
@@ -604,7 +644,7 @@ bool CGame::IsFull()
 		return false;
 	}
 
-uint32_t CGame::GetNewIGameID()
+uint16_t CGame::GetNewIGameID()
 	{
 		int start = 1;
 		int count = 0;
@@ -642,6 +682,16 @@ bool CGame::IsHost(CUser *user)
 		}
 
 		return false;
+	}
+
+bool CGame::HasMapMod()
+	{
+		return m_Modded;
+	}
+
+bool CGame::IsPrivate()
+	{
+		return m_Private;
 	}
 
 void CGame::RemoveUser(CUser *user, CGame::ERemoveReason reason)
@@ -1022,7 +1072,17 @@ void CCore::UpdateGame(CGame *game)
 		SendToAll((uint8_t*)&p, sizeof(SRefreshGamePacket));
 	}
 
-void CCore::Command(std::string cmd) //TODO
+void CCore::UpdateUser(CUser *user)
+	{
+		SRefreshPlayerPacket p;
+		p.header = PLAYER_REFRESH;
+		p.id = user->GetId();
+		p.playing = user->GetGameStatus();
+
+		SendToAll((uint8_t*)&p, sizeof(SRefreshPlayerPacket));
+	}
+
+void CCore::Command(std::string cmd)
 	{
 		std::vector<std::string> split;
 		boost::split(split, cmd, boost::is_any_of(std::string(" ")));

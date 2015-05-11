@@ -18,10 +18,10 @@
 #define MAX_USERS 1024
 
 static uint16_t PlayerCount = 0;
-static uint32_t GameCount = 0;
+static uint8_t GameCount = 0;
 
 uint16_t GeneratePlayerID();
-uint32_t GenerateGameID();
+uint16_t GenerateGameID();
 
 void ServerInit();
 void Stop();
@@ -45,6 +45,12 @@ enum EUserAuthority
 	STATUS_ADMIN
 };
 
+enum EGameStatus
+{
+	STATUS_LOBBY,
+	STATUS_PLAYING
+};
+
 class CGame;
 
 class CUser
@@ -57,12 +63,14 @@ private:
 	unsigned long m_ChatBlockEnd;
 	unsigned long m_FirstChatTime;
 	unsigned long m_JoinTime;
+	unsigned long m_NextRefreshTime;
 
 	uint16_t	m_Id;
 	uint16_t	m_IGameId;
 	uint16_t	m_GameId;
 	uint32_t	m_Rank[7];
 	uint8_t		m_Status;
+	uint8_t		m_GameStatus;
 
 	bool		m_Allocated;
 
@@ -71,14 +79,20 @@ private:
 
 public:
 
-	CUser(CNet *net, std::string Ip) : m_Connection(net), m_Ip(Ip), m_Game(NULL), m_Status(STATUS_PLAYER),
+	CUser(CNet *net, std::string Ip) : 
+		m_Connection(net), 
+		m_Ip(Ip), 
+		m_Game(NULL), 
+		m_Status(STATUS_PLAYER),
+		m_GameStatus(STATUS_LOBBY),
 		m_ChatCount(0),
 		m_FirstChatTime(0),
 		m_Id(-1),
 		m_IGameId(-1),
 		m_GameId(-1),
 		m_Allocated(false),
-		m_ChatBlockEnd(0)
+		m_ChatBlockEnd(0),
+		m_NextRefreshTime(0)
 	{
 		Initialize();
 	}
@@ -90,6 +104,8 @@ public:
 		m_JoinTime = GetRunTime();
 		m_Id = GeneratePlayerID();
 
+		m_NextRefreshTime = GetRunTime() + 10000;
+
 		memset(&m_Rank, 0x00, sizeof(uint32_t) * 7);
 		m_Connection->BindUser(this);
 	}
@@ -99,6 +115,7 @@ public:
 		m_Connection = net;
 		m_Ip = ip;
 		m_Game = NULL;
+		m_GameStatus = STATUS_LOBBY;
 		m_Status = STATUS_PLAYER;
 		m_ChatCount = 0;
 		m_FirstChatTime = 0;
@@ -107,6 +124,7 @@ public:
 		m_GameId = -1;
 		m_Allocated = false;
 		m_ChatBlockEnd = 0;
+		m_NextRefreshTime = 0;
 
 		Initialize();
 	}
@@ -115,23 +133,26 @@ public:
 	void AppendData(uint8_t *data, uint32_t size);
 	void AppendData(void *data, uint32_t size);
 
-	int TryJoinGame(CGame *game);
+	int		TryJoinGame(CGame *game);
+	void	JoinGame(CGame *game);
 
-	void JoinGame(CGame *game);
-	CGame *HostGame();
+	CGame	*HostGame();
 
-	uint16_t GetId();
-	uint16_t GetIGameId();
-	uint32_t GetGameId();
-	uint32_t GetLastChatCount();
-	uint8_t GetStatus();
+	uint16_t	GetId();
+	uint16_t	GetIGameId();
+	uint16_t	GetGameId();
+	uint32_t	GetLastChatCount();
+	uint8_t		GetStatus();
+	uint8_t		GetGameStatus();
 
 	void SetName(std::string name);
 	void SetRank(uint32_t rank[7]);
 	void SetStatus(EUserAuthority status);
+	void SetGameStatus(EGameStatus status);
 
 	std::string GetName();
 	std::string GetIp();
+
 	uint32_t *GetRank();
 
 	bool Allocated();
@@ -143,8 +164,8 @@ public:
 	void SetGameId(uint16_t Id);
 	void SetIGameId(uint16_t Id);
 
-	CGame *GetGame();
-	CNet *GetConnection();
+	CGame	*GetGame();
+	CNet	*GetConnection();
 
 	void SetConnection(CNet *conn);
 };
@@ -170,6 +191,9 @@ private:
 
 	UserVec m_Users;
 
+	bool m_Modded;
+	bool m_Private;
+
 public:
 
 	enum ERemoveReason
@@ -180,14 +204,17 @@ public:
 		EXIT
 	};
 
-	CGame(const char* name, const char* map, int MaxPlayers, const char* version, const char* mods, const char *password) :
+	CGame(const char* name, const char* map, int MaxPlayers, const char* version, const char* mods, 
+		const char *password, bool mod, bool privateGame) :
 		m_Name(name),
 		m_Map(map),
 		m_Players(0),
 		m_MaxPlayers(MaxPlayers),
 		m_Version(version),
 		m_Password(password),
-		m_Mods(mods)
+		m_Mods(mods),
+		m_Modded(mod),
+		m_Private(privateGame)
 	{
 		Initialize();
 	}
@@ -211,17 +238,19 @@ public:
 
 	bool IsFull();
 	bool IsHost(CUser *user);
+	bool HasMapMod();
+	bool IsPrivate();
 
 	void RemoveUser(CUser *user, CGame::ERemoveReason reason);
 	void AddUser(CUser *user);
 	void Close();
 
 	CUser *GetHost();
-	uint32_t GetGameID();
+	uint16_t GetGameID();
 	uint16_t GetHostID();
-	uint32_t GetMaxPlayers();
-	uint32_t GetPlayerCount();
-	uint32_t GetNewIGameID();
+	uint8_t GetMaxPlayers();
+	uint8_t GetPlayerCount();
+	uint16_t GetNewIGameID();
 
 	uint32_t *GetMinRank();
 	uint32_t *GetMaxRank();
@@ -246,15 +275,15 @@ private:
 
 	EErrorCodes LastError;
 
-	boost::thread *m_NetThread;
-	boost::mutex m_Mutex;
+	boost::thread	m_NetThread;
+	boost::mutex	m_Mutex;
 
 	boost::asio::io_service m_Service;
 
 public:
 	boost::asio::io_service &GetService();
 
-	CCore() : m_NetThread(NULL), m_Service(), UserList(), GameList()
+	CCore() : m_Service(), UserList(), GameList()
 	{
 		Initialize();
 	}
@@ -307,6 +336,8 @@ public:
 	void RemoveConnection(CUser *user);
 	void RemoveConnection(CNet *connection);
 	void RemoveGame(CGame *game);
+
+	void UpdateUser(CUser *user);
 	void UpdateGame(CGame *game);
 
 	void Command(std::string cmd);

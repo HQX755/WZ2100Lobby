@@ -20,6 +20,8 @@ enum EPacketHeaders
 	CHANGE_NAME = 13,
 	REQUEST_PASSWORD = 14,
 	GAME_PLAYER_REMOVE = 15,
+	PLAYER_REFRESH = 16,
+	REJOIN_LOBBY = 17
 };
 
 enum EPacketSubHeaders
@@ -27,13 +29,6 @@ enum EPacketSubHeaders
 	BAN_PLAYER = 1,
 	BAN_GAME = 2,
 	SEND_NOTICE = 4
-};
-
-struct SRefreshPacket
-{
-	uint16_t header;
-	uint16_t id;
-	uint32_t rank[7];
 };
 
 struct SShutDownPacket
@@ -58,6 +53,7 @@ struct SNewPPacket
 	char Name[20];
 	uint32_t Rank[7];
 	uint8_t status;
+	uint8_t playing;
 };
 
 struct SConnectPacket
@@ -84,14 +80,15 @@ struct SNewGPacket
 	char ip[20];
 	char Map[20];
 	char Version[10];
-	char password[20];
 	char mods[20];
-	uint32_t Players;
-	uint32_t MaxPlayers;
+	uint8_t Players;
+	uint8_t MaxPlayers;
 	uint32_t MinRank[7];
 	uint32_t MaxRank[7];
 	uint32_t game_version_major;
 	uint32_t game_version_minor;
+	uint8_t mapMod;
+	uint8_t privateGame;
 };
 
 struct SRemovePPacket
@@ -129,14 +126,21 @@ struct SGameStatusPacket
 struct SGameHostPacket
 {
 	uint16_t header;
-	uint32_t gId;
+	uint16_t gId;
 };
 
 struct SRefreshGamePacket
 {
 	uint16_t header;
-	uint32_t gId;
-	uint32_t players;
+	uint16_t gId;
+	uint8_t players;
+};
+
+struct SRefreshPlayerPacket
+{
+	uint16_t header;
+	uint16_t id;
+	uint8_t playing;
 };
 
 struct SRequestPasswordPacket
@@ -144,6 +148,12 @@ struct SRequestPasswordPacket
 	uint16_t header;
 	char name[20];
 	char password[20];
+};
+
+struct SJoinGamePacket
+{
+	uint16_t header;
+	uint16_t gId;
 };
 
 #endif
