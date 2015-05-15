@@ -38,19 +38,6 @@ enum EGameResponse
 	GAME_PASSWORD_REQUIRED
 };
 
-enum EUserAuthority
-{
-	STATUS_PLAYER,
-	STATUS_REGISTERED,
-	STATUS_ADMIN
-};
-
-enum EGameStatus
-{
-	STATUS_LOBBY,
-	STATUS_PLAYING
-};
-
 class CGame;
 
 class CUser
@@ -68,7 +55,7 @@ private:
 	uint16_t	m_Id;
 	uint16_t	m_IGameId;
 	uint16_t	m_GameId;
-	uint32_t	m_Rank[7];
+	PLAYERSTATS	m_Rank;
 	uint8_t		m_Status;
 	uint8_t		m_GameStatus;
 
@@ -106,7 +93,7 @@ public:
 
 		m_NextRefreshTime = GetRunTime() + 10000;
 
-		memset(&m_Rank, 0x00, sizeof(uint32_t) * 7);
+		memset(&m_Rank, 0x00, sizeof(PLAYERSTATS));
 		m_Connection->BindUser(this);
 	}
 
@@ -134,7 +121,7 @@ public:
 	void AppendData(void *data, uint32_t size);
 
 	int		TryJoinGame(CGame *game);
-	void	JoinGame(CGame *game);
+	bool	JoinGame(CGame *game);
 
 	CGame	*HostGame();
 
@@ -146,14 +133,14 @@ public:
 	uint8_t		GetGameStatus();
 
 	void SetName(std::string name);
-	void SetRank(uint32_t rank[7]);
+	void SetRank(PLAYERSTATS rank);
 	void SetStatus(EUserAuthority status);
 	void SetGameStatus(EGameStatus status);
 
 	std::string GetName();
 	std::string GetIp();
 
-	uint32_t *GetRank();
+	PLAYERSTATS GetRank();
 
 	bool Allocated();
 
@@ -186,13 +173,14 @@ private:
 	uint32_t m_GameId;
 	uint32_t m_Players;
 	uint32_t m_MaxPlayers;
-	uint32_t m_MinRank[7];
-	uint32_t m_MaxRank[7];
+	PLAYERSTATS m_MinRank;
+	PLAYERSTATS m_MaxRank;
 
 	UserVec m_Users;
 
 	bool m_Modded;
 	bool m_Private;
+	bool m_InLobby;
 
 public:
 
@@ -214,7 +202,8 @@ public:
 		m_Password(password),
 		m_Mods(mods),
 		m_Modded(mod),
-		m_Private(privateGame)
+		m_Private(privateGame),
+		m_InLobby(true)
 	{
 		Initialize();
 	}
@@ -224,8 +213,8 @@ public:
 		m_GameId = GenerateGameID();
 		m_NextRefreshTime = GetRunTime() + 10000;
 
-		memset(&m_MinRank, 0, sizeof(uint32_t) * 7);
-		memset(&m_MaxRank, 0, sizeof(uint32_t) * 7);
+		memset(&m_MinRank, 0, sizeof(PLAYERSTATS));
+		memset(&m_MaxRank, 0, sizeof(PLAYERSTATS));
 	}
 
 	~CGame();
@@ -242,8 +231,12 @@ public:
 	bool IsPrivate();
 
 	void RemoveUser(CUser *user, CGame::ERemoveReason reason);
-	void AddUser(CUser *user);
+	bool AddUser(CUser *user);
 	void Close();
+	void StartGame();
+
+	void SetPlayerCount(uint8_t players);
+	void SetMaxPlayerCount(uint8_t max);
 
 	CUser *GetHost();
 	uint16_t GetGameID();
@@ -252,8 +245,8 @@ public:
 	uint8_t GetPlayerCount();
 	uint16_t GetNewIGameID();
 
-	uint32_t *GetMinRank();
-	uint32_t *GetMaxRank();
+	PLAYERSTATS GetMinRank();
+	PLAYERSTATS GetMaxRank();
 };
 
 enum EErrorCodes
@@ -312,7 +305,7 @@ public:
 	void SendTo(CUser *user, uint8_t *data, uint32_t size);
 	void SendTo(CUser *user, void *data, uint32_t size);
 	void SendToAll(uint8_t *data, uint32_t size);
-	void SendToAll(void *data, uint32_t size, CUser *except = NULL);
+	void SendToAll(void *data, uint32_t size, CUser *except = NULL, uint8_t status = UINT8_MAX);
 
 	void BlockIp(std::string ip);
 	void UnblockIp(std::string ip);
@@ -332,6 +325,8 @@ public:
 	CUser *GetUserByName(const char *name);
 	CUser *GetUserByNet(CNet *net);
 	CUser *GetUserById(uint16_t id);
+
+	CGame *GetGameById(uint16_t id);
 
 	void RemoveConnection(CUser *user);
 	void RemoveConnection(CNet *connection);

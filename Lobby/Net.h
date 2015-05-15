@@ -5,8 +5,9 @@
 #include "Asio.h"
 #include "Helper.h"
 
-#define MAX_RECV 512
-#define MAX_SEND 512
+#define MAX_RECV	512
+#define MAX_SEND	512
+#define WZ_PORT		9990
 
 class CUser;
 
@@ -90,7 +91,7 @@ private:
 
 public:
 	CListener(boost::asio::io_service &main) : MainService(main), 
-		Acceptor(main, boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v4(), 2100)),
+		Acceptor(main, boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v4(), WZ_PORT)),
 		NET(NULL)
 	{
 	}

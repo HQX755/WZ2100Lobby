@@ -9,10 +9,10 @@ CListener *listener;
 
 //prevent new allocation . if single threaded
 
-static	SNewPPacket				_AddP;
-static 	SNewGPacket				_AddG;
-static	SRemoveGPacket			_RemoveG;
-static	SRemovePPacket			_RemoveP;
+static	SNewPPacket				_AddPlayer;
+static 	SNewGPacket				_AddGame;
+static	SRemoveGPacket			_RemoveGame;
+static	SRemovePPacket			_RemovePlayer;
 static	SChatPacket				_Chat;
 static	SConnectPacket			_Connect;
 static	SChangeNamePacket		_ChangeName;
@@ -21,15 +21,16 @@ static	SRefreshGamePacket		_RefreshGame;
 static	SPlayerDataPacket		_PlayerData;
 static	SGameStatusPacket		_GameStatus;
 static	SGameHostPacket			_GameHost;
+static	SJoinGamePacket			_JoinGame;
 
 void ServerInit()
 {
 	sv = new CCore();
 
-	memset(&_AddP, 0, sizeof(SNewPPacket));
-	memset(&_AddG, 0, sizeof(SNewGPacket));
-	memset(&_RemoveG, 0, sizeof(SRemoveGPacket));
-	memset(&_RemoveP, 0, sizeof(SRemovePPacket));
+	memset(&_AddPlayer, 0, sizeof(SNewPPacket));
+	memset(&_AddGame, 0, sizeof(SNewGPacket));
+	memset(&_RemoveGame, 0, sizeof(SRemoveGPacket));
+	memset(&_RemovePlayer, 0, sizeof(SRemovePPacket));
 	memset(&_Connect, 0, sizeof(SConnectPacket));
 	memset(&_Chat, 0, sizeof(SChatPacket));
 	memset(&_ChangeName, 0, sizeof(SChangeNamePacket));
@@ -38,11 +39,12 @@ void ServerInit()
 	memset(&_PlayerData, 0, sizeof(SPlayerDataPacket));
 	memset(&_GameStatus, 0, sizeof(SGameStatusPacket));
 	memset(&_GameHost, 0, sizeof(SGameHostPacket));
+	memset(&_JoinGame, 0, sizeof(SJoinGamePacket));
 
-	_AddP.header = PLAYER_ADD;
-	_AddG.header = GAME_ADD;
-	_RemoveG.header = GAME_REMOVE;
-	_RemoveP.header = PLAYER_REMOVE;
+	_AddPlayer.header = PLAYER_ADD;
+	_AddGame.header = GAME_ADD;
+	_RemoveGame.header = GAME_REMOVE;
+	_RemovePlayer.header = PLAYER_REMOVE;
 	_Connect.header = CONNECT;
 	_Chat.header = CHAT;
 	_ChangeName.header = CHANGE_NAME;
@@ -51,6 +53,7 @@ void ServerInit()
 	_PlayerData.header = PLAYER_DATA;
 	_GameStatus.header = GAME_STATUS;
 	_GameHost.header = GAME_HOSTED;
+	_JoinGame.header = JOIN_GAME;
 
 	cmd = new CConsole();
 	cmd->Run();
@@ -67,8 +70,6 @@ CCore *CORE()
 {
 	return sv;
 }
-
-std::vector<CUser *> EnqueuedUsers;
 
 SShutDownPacket ShutDown()
 {
@@ -93,23 +94,26 @@ void AcceptCallback(CNet *net)
 
 	net->Start();
 
-	if(sv->IpIsBlocked(ip))
+	if(strcmp(ip.c_str(), "127.0.0.1") != 0)
 	{
-		printf("Blocked IP: %s\n", ip.c_str());
-		net->Stop();
-		net = NULL;
+		if(sv->IpIsBlocked(ip))
+		{
+			printf("Blocked IP: %s\n", ip.c_str());
+			net->DeleteLater();
+			net = NULL;
 
-		StartAccept();
-		return;
-	}
-	if(sv->MaxConnectionsReached(ip))
-	{
-		printf("Max connections reached.\n");
-		net->Stop();
-		net = NULL;
+			StartAccept();
+			return;
+		}
+		if(sv->MaxConnectionsReached(ip))
+		{
+			printf("Max connections reached.\n");
+			net->DeleteLater();
+			net = NULL;
 
-		StartAccept();
-		return;
+			StartAccept();
+			return;
+		}
 	}
 
 	CUser *user = new CUser(net, ip);
@@ -137,9 +141,11 @@ void Analyze(uint8_t *data, uint32_t size, CNet *net)
 		return;
 	}
 
+	uint16_t header = *(uint16_t*)data;
+
 	if(user)
 	{
-		switch(*(uint16_t*)data)
+		switch(header)
 		{
 		case CONNECT:
 			{
@@ -148,12 +154,12 @@ void Analyze(uint8_t *data, uint32_t size, CNet *net)
 					break;
 				}
 
-				_AddP = *(SNewPPacket*)data;
-				_AddP.header = PLAYER_ADD;
-				_AddP.id = user->GetId();
-				_AddP.status = user->GetStatus();
+				_AddPlayer = *(SNewPPacket*)data;
+				_AddPlayer.header = PLAYER_ADD;
+				_AddPlayer.id = user->GetId();
+				_AddPlayer.status = user->GetStatus();
 
-				int check = sv->CheckUserStatus(std::string(_AddP.Name).c_str());
+				int check = sv->CheckUserStatus(std::string(_AddPlayer.Name).c_str());
 				if(check == STATUS_REGISTERED)
 				{
 					break;
@@ -163,7 +169,7 @@ void Analyze(uint8_t *data, uint32_t size, CNet *net)
 				long double count = 1;
 
 CHECK_NAME:
-				check = sv->NameAlreadyExist(_AddP.Name);
+				check = sv->NameAlreadyExist(_AddPlayer.Name);
 				if(check)
 				{
 					if(check > 18 || count > 9)
@@ -173,8 +179,8 @@ CHECK_NAME:
 					}
 					else
 					{
-						std::string str = std::string(_AddP.Name + std::string("_") + std::to_string(count));
-						strcpy_s(_AddP.Name, str.c_str());
+						std::string str = std::string(_AddPlayer.Name + std::string("_") + std::to_string(count));
+						strcpy_s(_AddPlayer.Name, str.c_str());
 						count++;
 
 						changed = true;
@@ -184,7 +190,7 @@ CHECK_NAME:
 				if(changed)
 				{
 					_ChangeName.id = user->GetId();
-					strcpy_s(_ChangeName.name, _AddP.Name);
+					strcpy_s(_ChangeName.name, _AddPlayer.Name);
 
 					user->AppendData(&_ChangeName, sizeof(SChangeNamePacket));
 				}
@@ -192,11 +198,11 @@ CHECK_NAME:
 				_PlayerData.id = user->GetId();
 				_PlayerData.status = user->GetStatus();
 
-				user->AppendData(&_PlayerData, sizeof(uint16_t)*3);
-				user->SetName(std::string(_AddP.Name));
-				user->SetRank(_AddP.Rank);
+				user->AppendData(&_PlayerData, sizeof(SPlayerDataPacket));
+				user->SetName(std::string(_AddPlayer.Name));
+				user->SetRank(_AddPlayer.Rank);
 
-				sv->SendToAll(&_AddP, sizeof(SNewPPacket), user);
+				sv->SendToAll(&_AddPlayer, sizeof(SNewPPacket), user);
 
 				for(unsigned int i = 0; i < sv->GetUserList()->size(); ++i)
 				{
@@ -205,13 +211,13 @@ CHECK_NAME:
 					{
 						if(_user != user)
 						{
-							_AddP.id = _user->GetId();
-							_AddP.status = _user->GetStatus();
+							_AddPlayer.id = _user->GetId();
+							_AddPlayer.status = _user->GetStatus();
+							_AddPlayer.Rank = _user->GetRank();
 
-							strcpy_s(_AddP.Name, _user->GetName().c_str());
-							memcpy((void*)_AddP.Rank, (void*)_user->GetRank(), sizeof(uint32_t) * 7);
+							strcpy_s(_AddPlayer.Name, _user->GetName().c_str());
 
-							user->AppendData(&_AddP, sizeof(SNewPPacket));
+							user->AppendData(&_AddPlayer, sizeof(SNewPPacket));
 						}
 					}
 				}
@@ -226,26 +232,23 @@ CHECK_NAME:
 							continue;
 						}
 
-						_AddG.id = _game->GetGameID();
-						_AddG.hostId = _game->GetHostID();
-						_AddG.Players = _game->GetPlayerCount();
-						_AddG.MaxPlayers = _game->GetMaxPlayers();
-						_AddG.mapMod = _game->HasMapMod();
-						_AddG.privateGame = _game->IsPrivate();
+						_AddGame.id = _game->GetGameID();
+						_AddGame.hostId = _game->GetHostID();
+						_AddGame.Players = _game->GetPlayerCount();
+						_AddGame.MaxPlayers = _game->GetMaxPlayers();
+						_AddGame.mapMod = _game->HasMapMod();
+						_AddGame.privateGame = _game->IsPrivate();
 					
-						memcpy(&_AddG.MinRank, (void*)_game->GetMinRank(), sizeof(uint32_t) * 7);
-						memcpy(&_AddG.MaxRank, (void*)_game->GetMaxRank(), sizeof(uint32_t) * 7);
+						_AddGame.MinRank = _game->GetMinRank();
+						_AddGame.MaxRank = _game->GetMaxRank();
 
-						strcpy_s(_AddG.Map, _game->GetMapName().c_str());
-						strcpy_s(_AddG.mods, _game->GetMods().c_str());
-						strcpy_s(_AddG.ip, _game->GetHost()->GetIp().c_str());
+						strcpy_s(_AddGame.Map, _game->GetMapName().c_str());
+						strcpy_s(_AddGame.mods, _game->GetMods().c_str());
+						strcpy_s(_AddGame.ip, _game->GetHost()->GetIp().c_str());
 
-						user->AppendData(&_AddG, sizeof(SNewGPacket));
+						user->AppendData(&_AddGame, sizeof(SNewGPacket));
 					}
 				}
-
-				_GameStatus.status = 1;
-				user->AppendData(&_GameStatus, sizeof(SGameStatusPacket));
 
 				break;
 			}
@@ -258,21 +261,50 @@ CHECK_NAME:
 
 				user->SetGameStatus(STATUS_PLAYING);
 
-				_AddG = *(SNewGPacket*)data;
-				_AddG.header = GAME_ADD;
+				_AddGame = *(SNewGPacket*)data;
+				_AddGame.header = GAME_ADD;
 
-				CGame *game = new CGame((std::string(_AddG.Name).c_str()), (std::string(_AddG.Map).c_str()), _AddG.MaxPlayers, (std::string(_AddG.Version).c_str()), 
-					(std::string(_AddG.mods).c_str()), (std::string("").c_str()), _AddG.mapMod == 0, _AddG.privateGame == 0);
+				CGame *game = new CGame((std::string(_AddGame.Name).c_str()), (std::string(_AddGame.Map).c_str()), _AddGame.MaxPlayers, (std::string(_AddGame.Version).c_str()), 
+					(std::string(_AddGame.mods).c_str()), (std::string("").c_str()), _AddGame.mapMod == 0, _AddGame.privateGame == 0);
 
-				_AddG.id = game->GetGameID();
+				_AddGame.id = game->GetGameID();
 
 				user->JoinGame(game);
 				sv->AddGame(game);
 
 				_GameHost.gId = game->GetGameID();
-				user->AppendData(&_GameHost, sizeof(SGameHostPacket));
 
-				sv->SendToAll(&_AddG, sizeof(SNewGPacket));
+				user->AppendData(&_GameHost, sizeof(SGameHostPacket));
+				sv->SendToAll(&_AddGame, sizeof(SNewGPacket));
+
+				break;
+			}
+		case JOIN_GAME:
+			{
+				_JoinGame = *(SJoinGamePacket*)data;
+
+				CGame *game = sv->GetGameById(_JoinGame.gId);
+				if(game != NULL)
+				{
+					game->AddUser(user);
+				}
+
+				user->SetGameStatus(STATUS_PLAYING);
+				
+				break;
+			}
+		case GAME_REFRESH:
+			{
+				_RefreshGame = *(SRefreshGamePacket*)data;
+
+				if(user->GetGame() != NULL)
+				{
+					if(user->GetGame()->IsHost(user))
+					{
+						user->GetGame()->SetPlayerCount(_RefreshGame.players);
+						user->GetGame()->SetMaxPlayerCount(_RefreshGame.maxPlayers);
+					}
+				}
 
 				break;
 			}
@@ -288,7 +320,7 @@ CHECK_NAME:
 				_Chat.id = user->GetId();
 				strcpy_s(_Chat.Text, (*(SChatPacket*)data).Text);
 
-				sv->SendToAll(&_Chat, sizeof(SChatPacket));
+				sv->SendToAll(&_Chat, sizeof(SChatPacket), user, STATUS_LOBBY);
 					
 				break;
 			}
@@ -325,7 +357,7 @@ CHECK_RENAME:
 				}
 
 				user->SetName(_ChangeName.name);
-				sv->SendToAll(&_ChangeName, sizeof(SChangeNamePacket), user);
+				sv->SendToAll(&_ChangeName, sizeof(SChangeNamePacket));
 
 				break;
 			}
@@ -335,11 +367,41 @@ CHECK_RENAME:
 
 				break;
 			}
+		case GAME_STATUS:
+			{
+				_GameStatus = *(SGameStatusPacket*)data;
+				_GameStatus.id = user->GetId();
+
+				if(_GameStatus.status == user->GetGameStatus())
+				{
+					break;
+				}
+
+				user->SetGameStatus((EGameStatus)_GameStatus.status);
+				sv->SendToAll(&_GameStatus, sizeof(SGameStatusPacket));
+
+				break;
+			}
+		case GAME_REMOVE:
+			{
+				_RemoveGame = *(SRemoveGPacket*)data;
+
+				CGame *game = sv->GetGameById(_RemoveGame.id);
+				if(game != NULL)
+				{
+					if(game->GetHost() == user)
+					{
+						sv->RemoveGame(game);
+					}
+				}
+
+				break;
+			}
 		default:
 			{
 				sv->BlockIp(user->GetIp());
 
-				printf("Received invalid packet. Header: %d", *(uint16_t*)data);
+				printf("Received invalid packet. Header: %d\n", *(uint16_t*)data);
 
 				sv->RemoveConnection(user);
 				break;
@@ -388,7 +450,7 @@ void CUser::Update()
 		{
 			m_Connection->Update();
 
-			if(GetRunTime() > m_NextRefreshTime)
+			if(m_Allocated && GetRunTime() > m_NextRefreshTime)
 			{
 				sv->UpdateUser(this);
 
@@ -424,10 +486,19 @@ int CUser::TryJoinGame(CGame *game)
 		return -1;
 	}
 
-void CUser::JoinGame(CGame *game)
+bool CUser::JoinGame(CGame *game)
 	{
-		m_Game = game;
-		m_Game->AddUser(this);
+		if(game != NULL)
+		{
+			if(game->AddUser(this))
+			{
+				m_Game = game;
+				return true;
+			}
+		}
+		m_Game = NULL;
+
+		return false;
 	}
 
 uint16_t CUser::GetId()
@@ -440,7 +511,7 @@ uint32_t CUser::GetLastChatCount()
 		return m_ChatCount;
 	}
 
-uint32_t *CUser::GetRank()
+PLAYERSTATS CUser::GetRank()
 	{
 		return m_Rank;
 	}
@@ -451,9 +522,9 @@ void CUser::SetName(std::string name)
 		m_Allocated = true;
 	}
 
-void CUser::SetRank(uint32_t rank[7])
+void CUser::SetRank(PLAYERSTATS rank)
 	{
-		memcpy(&m_Rank, (void*)rank, sizeof(uint32_t) * 7);
+		m_Rank = rank;
 	}
 
 void CUser::SetStatus(EUserAuthority status)
@@ -571,10 +642,21 @@ CGame::~CGame()
 
 void CGame::Update()
 	{
-		if(GetRunTime() > m_NextRefreshTime)
+		if(m_InLobby && GetRunTime() > m_NextRefreshTime)
 		{
-
+			m_NextRefreshTime = GetRunTime() + 10000;
+			sv->UpdateGame(this);
 		}
+	}
+
+void CGame::SetPlayerCount(uint8_t players)
+	{
+		m_Players = players;
+	}
+
+void CGame::SetMaxPlayerCount(uint8_t max)
+	{
+		m_MaxPlayers = max;
 	}
 
 CUser *CGame::GetHost()
@@ -629,12 +711,12 @@ uint8_t CGame::GetPlayerCount()
 		return m_Players;
 	}
 
-uint32_t *CGame::GetMinRank()
+PLAYERSTATS CGame::GetMinRank()
 	{
 		return m_MinRank;
 	}
 
-uint32_t *CGame::GetMaxRank()
+PLAYERSTATS CGame::GetMaxRank()
 	{
 		return m_MaxRank;
 	}
@@ -701,26 +783,35 @@ bool CGame::IsPrivate()
 
 void CGame::RemoveUser(CUser *user, CGame::ERemoveReason reason)
 	{
-		SGRemovePPacket p;
-		p.header = GAME_PLAYER_REMOVE;
-		p.id = user->GetIGameId();
-		p.reason = (uint8_t)reason;
+#ifdef LOBBY_HANDLE_GAME_DATA
 
-		BOOST_FOREACH(CUser *_user, m_Users)
+		SGRemovePPacket p(user->GetIGameId(), (uint8_t)reason);
+
+		if(m_Users.size())
 		{
-			_user->AppendData((uint8_t*)&p, sizeof(SGRemovePPacket));
+			BOOST_FOREACH(CUser *_user, m_Users)
+			{
+				_user->AppendData((uint8_t*)&p, sizeof(SGRemovePPacket));
+			}
 		}
 
+		m_Players--;
+
+#endif
 		user->SetGameId(-1);
 		user->SetIGameId(-1);
-		m_Players--;
+
+		if(IsHost(user))
+		{
+			sv->RemoveGame(this);
+		}
 	}
 
-void CGame::AddUser(CUser *user)
+bool CGame::AddUser(CUser *user)
 	{
 		if(m_Players + 1 > m_MaxPlayers)
 		{
-			return;
+			return false;
 		}
 
 		m_Users.push_back(user);
@@ -735,17 +826,31 @@ void CGame::AddUser(CUser *user)
 		{
 			user->SetIGameId(0);
 		}
+
+		return true;
 	}
 
 void CGame::Close()
 	{
+		BOOST_FOREACH(CUser *user, m_Users)
+		{
+			if(user)
+			{
+				user->JoinGame(NULL);
+			}
+		}
 		sv->RemoveGame(this);
+	}
+
+void CGame::StartGame()
+	{
+		m_InLobby = false;
 	}
 
 
 ///////////////////////////
 
-// CORE
+//		CORE
 
 //////////////////////////
 
@@ -787,8 +892,11 @@ CCore::~CCore()
 		SShutDownPacket p = ShutDown();
 		BOOST_FOREACH(CUser *user, UserList)
 		{
-			user->AppendData(&p, sizeof(SShutDownPacket));
-			delete user;
+			if(user)
+			{
+				user->AppendData(&p, sizeof(SShutDownPacket));
+				delete user;
+			}
 		}
 	}
 
@@ -846,13 +954,16 @@ void CCore::SendToAll(uint8_t *data, uint32_t size)
 		}
 	}
 
-void CCore::SendToAll(void *data, uint32_t size, CUser *except)
+void CCore::SendToAll(void *data, uint32_t size, CUser *except, uint8_t status)
 	{
 		BOOST_FOREACH(CUser *user, UserList)
 		{
 			if(user && user != except)
 			{
-				user->AppendData(data, size);
+				if(status == UINT8_MAX || user->GetGameStatus() == status)
+				{
+					user->AppendData(data, size);
+				}
 			}
 		}
 	}
@@ -931,15 +1042,33 @@ int CCore::NameAlreadyExist(std::string name)
 		return 0;
 	}
 
-std::vector<CUser *> CCore::GetUsersByIP(std::string ip) //
+std::vector<CUser *> CCore::GetUsersByIP(std::string ip)
 	{
 		std::vector<CUser *> v;
+
+		for(unsigned int i = 0; i < UserList.size(); ++i)
+		{
+			if(strcmp(UserList[i]->GetIp().c_str(), ip.c_str()) == 0)
+			{
+				v.push_back(UserList[i]);
+			}
+		}
+
 		return v;
 	}
 
-std::vector<CUser *> CCore::GetUsersByName(std::string name) //
+std::vector<CUser *> CCore::GetUsersByName(std::string name)
 	{
 		std::vector<CUser *> v;
+
+		for(unsigned int i = 0; i < UserList.size(); ++i)
+		{
+			if(strcmp(UserList[i]->GetName().c_str(), name.c_str()) == 0)
+			{
+				v.push_back(UserList[i]);
+			}
+		}
+
 		return v;
 	}
 
@@ -992,6 +1121,19 @@ CUser *CCore::GetUserById(uint16_t id)
 		return NULL;
 	}
 
+CGame *CCore::GetGameById(uint16_t id)
+	{
+		for(unsigned int i = 0; i < GameList.size(); ++i)
+		{
+			if(GameList[i]->GetGameID() == id)
+			{
+				return GameList[i];
+			}
+		}
+
+		return NULL;
+	}
+
 void CCore::RemoveConnection(CUser *user)
 	{
 		if(!user)
@@ -1000,10 +1142,7 @@ void CCore::RemoveConnection(CUser *user)
 		}
 		if(user->Allocated())
 		{
-			SRemovePPacket p;
-			p.header = PLAYER_REMOVE;
-			p.id = user->GetId();
-
+			SRemovePPacket p(user->GetId());
 			SendToAll(&p, sizeof(SRemovePPacket));
 		}
 		std::deque<CUser *>::iterator it = std::find(UserList.begin(), UserList.end(), user);
@@ -1037,10 +1176,7 @@ void CCore::RemoveConnection(CNet *connection)
 
 		if(user != NULL)
 		{
-			SRemovePPacket p;
-			p.header = PLAYER_REMOVE;
-			p.id = user->GetId();
-
+			SRemovePPacket p(user->GetId());
 			SendToAll(&p, sizeof(SRemovePPacket));
 
 			UserList.erase(UserList.begin() + pos);
@@ -1062,32 +1198,24 @@ void CCore::RemoveGame(CGame *game)
 
 		GameList.erase(it);
 
-		SRemoveGPacket p;
-		p.header = GAME_REMOVE;
-		p.id = game->GetGameID();
+		_RemoveGame.id = game->GetGameID();
+		SendToAll(&_RemoveGame, sizeof(SRemoveGPacket));
 
-		SendToAll((uint8_t*)&p, sizeof(SRemoveGPacket));
 		delete game;
 	}
 
 void CCore::UpdateGame(CGame *game)
 	{
-		SRefreshGamePacket p;
-		p.header = GAME_REFRESH;
-		p.gId = game->GetGameID();
-		p.players = game->GetPlayerCount();
+		SRefreshGamePacket p(game->GetGameID(), game->GetPlayerCount(), game->GetMaxPlayers());
 
-		SendToAll((uint8_t*)&p, sizeof(SRefreshGamePacket));
+		SendToAll(&p, sizeof(SRefreshGamePacket));
 	}
 
 void CCore::UpdateUser(CUser *user)
 	{
-		SRefreshPlayerPacket p;
-		p.header = PLAYER_REFRESH;
-		p.id = user->GetId();
-		p.playing = user->GetGameStatus();
+		SRefreshPlayerPacket p(user->GetId(), user->GetGameStatus());
 
-		SendToAll((uint8_t*)&p, sizeof(SRefreshPlayerPacket));
+		SendToAll(&p, sizeof(SRefreshPlayerPacket));
 	}
 
 void CCore::Command(std::string cmd)
@@ -1107,7 +1235,7 @@ void CCore::Command(std::string cmd)
 				}
 				else
 				{
-					printf("No user online with such name\n");
+					printf("No user online with such name.\n");
 				}
 			}
 			else if(split[0] == "Chatblock" && split.size() > 1)
@@ -1127,7 +1255,7 @@ void CCore::Command(std::string cmd)
 				}
 				else
 				{
-					printf("No user online with such name\n");
+					printf("No user online with such name.\n");
 				}
 			}
 		}

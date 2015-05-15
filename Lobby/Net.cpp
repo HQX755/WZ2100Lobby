@@ -57,7 +57,7 @@ void CNet::AddData(uint8_t *data, uint32_t size, bool sys)
 
 		if(m_OutputData)
 		{
-			if(m_OutputData[0] == 0)
+			if(*(uint16_t*)m_OutputData == 0)
 			{
 				m_LastOutputSize = size;
 				memcpy(m_OutputData, data, size);
@@ -79,7 +79,7 @@ void CNet::Write(bool sys)
 			return;
 		}
 
-		if(m_OutputData[0] && m_LastOutputSize)
+		if(*(uint16_t*)m_OutputData && m_LastOutputSize)
 		{
 			boost::asio::async_write(m_Socket, boost::asio::buffer(m_OutputData, m_LastOutputSize), 
 				make_custom_alloc_handler(allocator_, 
@@ -113,14 +113,11 @@ void CNet::WriteHandler(boost::system::error_code ec, std::size_t s)
 		}
 		else
 		{
-			printf("Sent data. %d\n", s);
+			printf("Sent data. %d, header: %d\n", s, *(uint16_t*)m_OutputData);
 		}
 
-		std::fill(m_OutputData, m_OutputData + m_LastOutputSize, 0);
-
+		*(uint16_t*)m_OutputData = 0;
 		m_LastOutputSize = 0;
-		//_custom_alloc_handler<boost::_bi::bind_t<void, boost::_mfi::mf0<void,CNet>, boost::_bi::list1<boost::_bi::value<CNet *>>>> handler(allocator_, boost::bind(&CNet::Write, this)); //hm..
-		//handler(&CNet::Write, this);
 
 		bHandlerActive[2] = true;
 		Write();
@@ -143,7 +140,7 @@ void CNet::ReadHandler(const boost::system::error_code &ec, std::size_t s)
 		}
 		if(s > 1024)
 		{
-			printf("Received more than allowed data.\n");
+			printf("Received more data than allowed.\n");
 			Stop();
 			return;
 		}
