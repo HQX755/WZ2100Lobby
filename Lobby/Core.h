@@ -171,8 +171,8 @@ private:
 	std::string m_Mods;
 
 	uint32_t m_GameId;
-	uint32_t m_Players;
-	uint32_t m_MaxPlayers;
+	uint8_t m_Players;
+	uint8_t m_MaxPlayers;
 	PLAYERSTATS m_MinRank;
 	PLAYERSTATS m_MaxRank;
 

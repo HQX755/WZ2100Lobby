@@ -3,24 +3,11 @@
 
 #include "stdafx.h"
 #include "Structs.h"
+#include "Utils.h"
 
 #define MAX_GAME_NAME_LENGTH 20
 #define MAX_PLAYER_NAME_LENGTH 20
 #define MAX_PASSWORD_LENGTH 20
-
-static inline size_t strlcpy(char *dest, const char *src, size_t size)
-{
-	if (size > 0)
-	{
-		strncpy(dest, src, size - 1);
-		dest[size - 1] = '\0';
-	}
-
-	return strlen(src);
-
-}
-
-#define sstrcpy(dest, src) (strlcpy((dest), (src), sizeof(dest)))
 
 enum EPacketHeaders
 {
@@ -241,17 +228,19 @@ struct SGRemovePPacket
 
 struct SChangeNamePacket
 {
-	SChangeNamePacket(uint16_t Id, const char* Name) : header(CHANGE_NAME), id(Id)
+	SChangeNamePacket(uint16_t Id, const char* Name, PLAYERSTATS Stats) : header(CHANGE_NAME), id(Id), stats(Stats)
 	{
 		sstrcpy(name, Name);
 	}
 	SChangeNamePacket() : header(CHANGE_NAME), id(0)
 	{
 		memset(name, 0, MAX_GAME_NAME_LENGTH);
+		memset(&stats, 0, sizeof(PLAYERSTATS));
 	}
 	uint16_t header;
 	uint16_t id;
 	char name[20];
+	PLAYERSTATS stats;
 };
 
 struct SGameStatusPacket

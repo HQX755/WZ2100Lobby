@@ -132,6 +132,36 @@ void StartAccept()
 	listener->Start();
 }
 
+std::string CheckName(const char *name)
+{
+	CUser *user = NULL;
+	std::string res(name);
+	long long count = 1;
+
+RECHECK:
+	if(count > 9)
+	{
+		return "";
+	}
+	for(unsigned int i = 0; i < sv->GetUserList()->size(); ++i)
+	{
+		user = sv->GetUserList()->at(i);
+		if(strcmp(user->GetName().c_str(), res.c_str()) == 0)
+		{
+			if(res.size() > 18)
+			{
+				res.resize(18);
+			}
+			res = std::string(res + "_" + std::to_string(count));
+
+			count++;
+			goto RECHECK;
+		}
+	}
+
+	return res;
+}
+
 void Analyze(uint8_t *data, uint32_t size, CNet *net)
 {
 	CUser *user = net->GetUser();
@@ -165,31 +195,16 @@ void Analyze(uint8_t *data, uint32_t size, CNet *net)
 					break;
 				}
 
-				bool changed = false;
-				long double count = 1;
+				std::string str = CheckName(_AddPlayer.Name);
+				bool changed = strcmp(str.c_str(), _AddPlayer.Name) != 0;
 
-CHECK_NAME:
-				check = sv->NameAlreadyExist(_AddPlayer.Name);
-				if(check)
-				{
-					if(check > 18 || count > 9)
-					{
-						sv->RemoveConnection(user->GetConnection());
-						break;
-					}
-					else
-					{
-						std::string str = std::string(_AddPlayer.Name + std::string("_") + std::to_string(count));
-						strcpy_s(_AddPlayer.Name, str.c_str());
-						count++;
+				strcpy_s(_AddPlayer.Name, str.c_str());
 
-						changed = true;
-						goto CHECK_NAME;
-					}
-				}
 				if(changed)
 				{
 					_ChangeName.id = user->GetId();
+					_ChangeName.stats = user->GetRank();
+
 					strcpy_s(_ChangeName.name, _AddPlayer.Name);
 
 					user->AppendData(&_ChangeName, sizeof(SChangeNamePacket));
@@ -244,7 +259,15 @@ CHECK_NAME:
 
 						strcpy_s(_AddGame.Map, _game->GetMapName().c_str());
 						strcpy_s(_AddGame.mods, _game->GetMods().c_str());
-						strcpy_s(_AddGame.ip, _game->GetHost()->GetIp().c_str());
+
+						if(_game->GetHost() != NULL)
+						{
+							strcpy_s(_AddGame.ip, _game->GetHost()->GetIp().c_str());
+						}
+						else
+						{
+							strcpy_s(_AddGame.ip, "127.0.0.1");
+						}
 
 						user->AppendData(&_AddGame, sizeof(SNewGPacket));
 					}
@@ -265,17 +288,23 @@ CHECK_NAME:
 				_AddGame.header = GAME_ADD;
 
 				CGame *game = new CGame((std::string(_AddGame.Name).c_str()), (std::string(_AddGame.Map).c_str()), _AddGame.MaxPlayers, (std::string(_AddGame.Version).c_str()), 
-					(std::string(_AddGame.mods).c_str()), (std::string("").c_str()), _AddGame.mapMod == 0, _AddGame.privateGame == 0);
+					(std::string(_AddGame.mods).c_str()), (std::string("").c_str()), _AddGame.mapMod == 1, _AddGame.privateGame == 1);
 
 				_AddGame.id = game->GetGameID();
+				_AddGame.hostId = game->GetHostID();
 
 				user->JoinGame(game);
 				sv->AddGame(game);
 
+				strcpy_s(_AddGame.ip, game->GetHost()->GetIp().c_str());
+
 				_GameHost.gId = game->GetGameID();
+				_GameStatus.id = user->GetId();
+				_GameStatus.status = user->GetGameStatus();
 
 				user->AppendData(&_GameHost, sizeof(SGameHostPacket));
 				sv->SendToAll(&_AddGame, sizeof(SNewGPacket));
+				sv->SendToAll(&_GameStatus, sizeof(SGameStatusPacket));
 
 				break;
 			}
@@ -329,34 +358,27 @@ CHECK_NAME:
 				_ChangeName = *(SChangeNamePacket*)data;
 				_ChangeName.id = user->GetId();
 
-				int check = sv->CheckUserStatus(std::string(_ChangeName.name).c_str());
+				int check = sv->CheckUserStatus(_ChangeName.name);
 				if(check == STATUS_REGISTERED)
 				{
 					break;
 				}
 
-				long double count = 1;
+				std::string str = CheckName(_ChangeName.name);
+				bool changed = strcmp(str.c_str(), _ChangeName.name) != 0;
 
-CHECK_RENAME:
-				check = sv->NameAlreadyExist(_ChangeName.name);
-				if(check)
+				strcpy_s(_ChangeName.name, str.c_str());
+
+				if(changed)
 				{
-					if(check > 18 || count > 9)
-					{
-						sv->RemoveConnection(user->GetConnection());
-						break;
-					}
-					else
-					{
-						std::string str = std::string(_ChangeName.name + std::string("_") + std::to_string(count));
-						strcpy_s(_ChangeName.name, str.c_str());
-						count++;
+					_ChangeName.id = user->GetId();
+					_ChangeName.stats = user->GetRank();
 
-						goto CHECK_RENAME;
-					}
+					user->AppendData(&_ChangeName, sizeof(SChangeNamePacket));
 				}
 
 				user->SetName(_ChangeName.name);
+				user->SetRank(_ChangeName.stats);
 				sv->SendToAll(&_ChangeName, sizeof(SChangeNamePacket));
 
 				break;
@@ -372,7 +394,8 @@ CHECK_RENAME:
 				_GameStatus = *(SGameStatusPacket*)data;
 				_GameStatus.id = user->GetId();
 
-				if(_GameStatus.status == user->GetGameStatus())
+				if(_GameStatus.status == user->GetGameStatus() ||
+					(_GameStatus.status != STATUS_PLAYING && _GameStatus.status != STATUS_LOBBY))
 				{
 					break;
 				}
@@ -450,18 +473,20 @@ void CUser::Update()
 		{
 			m_Connection->Update();
 
+#ifdef UPDATE_USERS
 			if(m_Allocated && GetRunTime() > m_NextRefreshTime)
 			{
 				sv->UpdateUser(this);
 
 				m_NextRefreshTime = GetRunTime() + 10000;
 			}
+#endif
 		}
 	}
 
 void CUser::AppendData(uint8_t *data, uint32_t size)
 	{
-		if(m_Connection)
+		if(m_Connection != NULL)
 		{
 			m_Connection->AddData(data, size);
 		}
@@ -661,7 +686,7 @@ void CGame::SetMaxPlayerCount(uint8_t max)
 
 CUser *CGame::GetHost()
 	{
-		if(m_Users.size() > 0)
+		if(m_Users.size())
 		{
 			return m_Users[0];
 		}
@@ -757,14 +782,12 @@ uint16_t CGame::GetNewIGameID()
 
 bool CGame::IsHost(CUser *user)
 	{
-		for(unsigned int i = 0; i < m_Users.size(); ++i)
+		//Host should be first in da vector.
+		if(m_Users.size())
 		{
-			if(m_Users[i] == user)
+			if(m_Users[0] == user)
 			{
-				if(m_Users[i]->GetIGameId() == 0)
-				{
-					return true;
-				}
+				return true;
 			}
 		}
 
@@ -817,7 +840,9 @@ bool CGame::AddUser(CUser *user)
 		m_Users.push_back(user);
 
 		m_Players++;
+
 		user->SetGameId(GetGameID());
+
 		if(m_Players > 1)
 		{
 			user->SetIGameId(GetNewIGameID());
