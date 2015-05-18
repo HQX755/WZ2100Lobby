@@ -172,6 +172,7 @@ static void displayMultiBut     (WIDGET *psWidget, UDWORD xOffset, UDWORD yOffse
 static void intDisplayFeBox     (WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset, PIELIGHT *pColours);
 static void displayRemoteGame   (WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset, PIELIGHT *pColours);
 static void displayPlayer       (WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset, PIELIGHT *pColours);
+static void displayPlayerLobby	(WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset, PIELIGHT *pColours);
 static void displayPosition     (WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset, PIELIGHT *pColours);
 static void displayColour       (WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset, PIELIGHT *pColours);
 static void displayTeamChooser  (WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset, PIELIGHT *pColours);
@@ -203,8 +204,6 @@ static void		closeTeamChooser	(void);
 static void		closePositionChooser	(void);
 static void		closeAiChooser		(void);
 static void		closeDifficultyChooser	(void);
-static bool		SendColourRequest	(UBYTE player, UBYTE col);
-static bool		SendPositionRequest	(UBYTE player, UBYTE chosenPlayer);
 static bool		safeToUseColour		(UDWORD player,UDWORD col);
 static bool		changeReadyStatus	(UBYTE player, bool bReady);
 static	void stopJoining(void);
@@ -642,11 +641,11 @@ void readAIs()
 
 		AIDATA ai;
 		aiconf.beginGroup("AI");
-		sstrcpy(ai.name, aiconf.value("name", "error").toString().toAscii().constData());
-		sstrcpy(ai.slo, aiconf.value("slo", "").toString().toAscii().constData());
-		sstrcpy(ai.vlo, aiconf.value("vlo", "").toString().toAscii().constData());
-		sstrcpy(ai.js, aiconf.value("js", "").toString().toAscii().constData());
-		sstrcpy(ai.tip, aiconf.value("tip", "Click to choose this AI").toString().toAscii().constData());
+		sstrcpy(ai.name, aiconf.value("name", "error").toString().toLatin1().constData());
+		sstrcpy(ai.slo, aiconf.value("slo", "").toString().toLatin1().constData());
+		sstrcpy(ai.vlo, aiconf.value("vlo", "").toString().toLatin1().constData());
+		sstrcpy(ai.js, aiconf.value("js", "").toString().toLatin1().constData());
+		sstrcpy(ai.tip, aiconf.value("tip", "Click to choose this AI").toString().toLatin1().constData());
 		if (strcmp(ai.name, "Nexus") == 0)
 		{
 			std::vector<AIDATA>::iterator it;
@@ -853,6 +852,7 @@ void setLobbyError (LOBBY_ERROR_TYPES error_type)
  * Try connecting to the given host, show
  * the multiplayer screen or a error.
  */
+
 bool joinGame(const char* host, uint32_t port)
 {
 	PLAYERSTATS	playerStats;
@@ -1126,6 +1126,7 @@ void runGameFind(void )
 				pie_LoadBackDrop(SCREEN_RANDOMBDROP);
 			}
 		}
+
 		addGames();									//redraw list
 		addConsoleBox();
 	}
@@ -1137,6 +1138,17 @@ void runGameFind(void )
 	{
 		changeTitleMode(PROTOCOL);
 	}
+
+#ifdef AD_LOBBY_CONNECTION
+	if(id == MULTIOP_CHATEDIT)
+	{
+		if(strcmp(widgGetString(psWScreen, MULTIOP_CHATEDIT), ""))
+		{
+			AddLobbyConsoleMessage(widgGetString(psWScreen, MULTIOP_CHATEDIT));					//send
+			widgSetString(psWScreen, MULTIOP_CHATEDIT, "");										// clear box
+		}
+	}
+#endif
 
 	if(id == MULTIOP_REFRESH || id == MULTIOP_FILTER_TOGGLE)
 	{
@@ -1157,6 +1169,24 @@ void runGameFind(void )
 		addGames();									//redraw list.
 		addConsoleBox();
 	}
+#ifdef AD_LOBBY_CONNECTION
+	if(id == MULTIOP_HOST_LOBBY)
+	{
+		NetPlay.bComms = true; // use network = true
+		NetPlay.isUPNP_CONFIGURED = false;
+		NetPlay.isUPNP_ERROR = false;
+		ingame.bHostSetup = true;
+		bMultiPlayer = true;
+		bMultiMessages = true;
+		NETinit(true);
+		NETdiscoverUPnPDevices();
+		game.type = SKIRMISH;		// needed?
+		lastTitleMode = MULTI;
+		changeTitleMode(MULTIOPTION);
+
+		SendStatus(1);
+	}
+#endif
 	if (id == CON_PASSWORD)
 	{
 		sstrcpy(game_password, widgGetString(psWScreen, CON_PASSWORD));
@@ -1201,11 +1231,15 @@ void runGameFind(void )
 	if (CancelPressed())
 	{
 		changeTitleMode(PROTOCOL);
+#ifdef AD_LOBBY_CONNECTION
+		SendStatus(1);
+#endif
 	}
 
 	// console box handling
 	iV_SetFont(font_small);
-	if(widgGetFromID(psWScreen, MULTIOP_CONSOLEBOX))
+	if(widgGetFromID(psWScreen, MULTIOP_CONSOLEBOX) ||
+		widgGetFromID(psWScreen, MULTIOP_CHATBOX))
 	{
 		while(getNumberConsoleMessages() > getConsoleLineInfo())
 		{
@@ -1245,6 +1279,12 @@ static void showPasswordLabel( WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset,
 	iV_SetTextColour(WZCOL_TEXT_MEDIUM);
 }
 
+//NEW
+#ifdef AD_LOBBY_CONNECTION
+#define MAX_P_LIST_SIZE_X MULTIOP_CHATBOXW
+#endif
+//NEW
+
 // This is what starts the lobby screen
 void startGameFind(void)
 {
@@ -1257,12 +1297,23 @@ void startGameFind(void)
 	sFormInit.style = WFORM_PLAIN;
 	sFormInit.x = MULTIOP_OPTIONSX;
 	sFormInit.y = MULTIOP_OPTIONSY;
+
+	//Check for resolution here, to scale -/+
 	sFormInit.width = MULTIOP_CHATBOXW;
-	sFormInit.height = 415;	// FIXME: Add box at bottom for server messages
+	sFormInit.height = MULTIOP_CHATBOXY - 1;	// FIXME: Add box at bottom for server messages
 	sFormInit.pDisplay = intOpenPlainForm;
 	sFormInit.disableChildren = true;
 
 	widgAddForm(psWScreen, &sFormInit);
+
+	//NEW
+#ifdef AD_LOBBY_CONNECTION
+	addOnlineListBox();
+
+	addMultiBut(psWScreen, FRONTEND_BOTFORM, MULTIOP_HOST_LOBBY, MULTIOP_CHATBOXW-MULTIOP_OKW-45-40, 5, MULTIOP_OKW, MULTIOP_OKH,
+		_("Host a Game"), IMAGE_HOST, IMAGE_HOST, IMAGE_HOST);
+#endif
+	//NEW
 
 	addSideText(FRONTEND_SIDETEXT,  MULTIOP_OPTIONSX-3, MULTIOP_OPTIONSY,_("GAMES"));
 
@@ -1289,6 +1340,11 @@ void startGameFind(void)
 	}
 	addGames();	// now add games.
 	addConsoleBox();
+	//NEW
+#ifdef AD_LOBBY_CONNECTION
+	addChatBox();
+#endif
+	//NEW
 	displayConsoleMessages();
 
 	// Password stuff. Hidden by default.
@@ -1307,7 +1363,7 @@ void startGameFind(void)
 	widgAddLabel(psWScreen, &sLabInit);
 
 	// and finally draw the password entry box
-	W_EDBINIT sEdInit;
+	W_EDBINIT sEdInit;  
 	sEdInit.formID = FRONTEND_BACKDROP;
 	sEdInit.id = CON_PASSWORD;
 	sEdInit.x = 180;
@@ -1379,6 +1435,9 @@ static void showPasswordForm(void)
 	widgHide(psWScreen, CON_CANCEL);
 	widgHide(psWScreen, MULTIOP_REFRESH);
 	widgHide(psWScreen, MULTIOP_FILTER_TOGGLE);
+#ifdef AD_LOBBY_CONNECTION
+	widgHide(psWScreen, MULTIOP_HOST_LOBBY);
+#endif
 
 	removeGames();
 
@@ -2180,7 +2239,7 @@ bool changeColour(unsigned player, int col, bool isHost)
 	return false;
 }
 
-static bool SendColourRequest(UBYTE player, UBYTE col)
+bool SendColourRequest(UBYTE player, UBYTE col)
 {
 	if(NetPlay.isHost)			// do or request the change
 	{
@@ -2197,7 +2256,7 @@ static bool SendColourRequest(UBYTE player, UBYTE col)
 	return true;
 }
 
-static bool SendPositionRequest(UBYTE player, UBYTE position)
+bool SendPositionRequest(UBYTE player, UBYTE position)
 {
 	if(NetPlay.isHost)			// do or request the change
 	{
@@ -2400,6 +2459,157 @@ static bool canChooseTeamFor(int i)
 {
 	return (i == selectedPlayer || NetPlay.isHost);
 }
+
+//NEW
+#ifdef AD_LOBBY_CONNECTION
+#define MAX_PLAYERS_PER_LIST 10
+
+void RefreshUserTab(WIDGET *psWidget, W_CONTEXT *psContext)
+{
+	W_TABFORM *psForm = (W_TABFORM *)psWidget;
+	addOnlineListBox(true, psForm->majorT);
+}
+#endif
+//NEW
+
+//NEW
+#ifdef AD_LOBBY_CONNECTION
+void addOnlineListBox(bool refresh, int tab)
+{
+	static char		tips[512][MAX_STR_LENGTH];
+	W_FORMINIT		sFormInit;
+
+	if(widgGetFromID(psWScreen, FRONTEND_BACKDROP) == NULL)
+	{
+		return;
+	}
+
+	if(widgGetFromID(psWScreen, MULTIOP_PLAYER_COUNT) != NULL)
+	{
+		widgDelete(psWScreen, MULTIOP_PLAYER_COUNT);
+	}
+
+	addText(MULTIOP_PLAYER_COUNT, MULTIOP_OPTIONSX + MULTIOP_CHATBOXW + (MULTIOP_PLAYERWIDTH - MULTIOP_TEAMSWIDTH - MULTIOP_READY_WIDTH - MULTIOP_COLOUR_WIDTH + 20) / 2, 
+		MULTIOP_CHATBOXY + MULTIOP_CHATBOXH - 10, std::string(std::to_string((long long)GetPlayerCount()) + std::string(" Players are online.")).c_str(), 
+		FRONTEND_BACKDROP);
+
+	if(!refresh)
+	{
+		//widgDelete(psWScreen,MULTIOP_PLAYERLIST);
+
+		sFormInit.formID = FRONTEND_BACKDROP;
+		sFormInit.id = MULTIOP_PLAYERLIST;
+		sFormInit.x = MULTIOP_OPTIONSX + MULTIOP_CHATBOXW;
+		sFormInit.y = 1;
+		sFormInit.style = WFORM_PLAIN;
+		sFormInit.width = MULTIOP_PLAYERWIDTH - MULTIOP_TEAMSWIDTH - MULTIOP_READY_WIDTH - MULTIOP_COLOUR_WIDTH + 20;
+		sFormInit.height = MULTIOP_CHATBOXY + MULTIOP_CHATBOXH - 1;
+		sFormInit.pDisplay = intDisplayPlainForm;
+		widgAddForm(psWScreen, &sFormInit);
+
+		sFormInit = W_FORMINIT();
+		sFormInit.formID = MULTIOP_PLAYERLIST;
+		sFormInit.id = MULTIOP_PLAYER_TAB;
+		sFormInit.style = WFORM_TABBED;
+		sFormInit.x = 2;
+		sFormInit.y = 2;
+		sFormInit.width = MULTIOP_PLAYERSW;
+		sFormInit.height = MULTIOP_PLAYERSH-4;
+
+		sFormInit.numMajor = 5;
+
+		sFormInit.majorPos = WFORM_TABTOP;
+		sFormInit.minorPos = WFORM_TABNONE;
+		sFormInit.majorSize = OBJ_TABWIDTH+2;
+		sFormInit.majorOffset = OBJ_TABOFFSET;
+		sFormInit.tabVertOffset = (OBJ_TABHEIGHT/2);
+		sFormInit.tabMajorThickness = OBJ_TABHEIGHT;
+		sFormInit.pUserData = &StandardTab;
+		sFormInit.pTabDisplay = intDisplayTab;
+		sFormInit.pCallback = RefreshUserTab;
+
+		// TABFIXME: 
+		// This appears to be the map pick screen, when we have lots of maps
+		// this will need to change.
+		if (sFormInit.numMajor > 10)
+		{
+			//ASSERT(sFormInit.numMajor < MAX_TAB_SMALL_SHOWN,"Too many maps! Need scroll tabs here.");
+			sFormInit.pUserData = &SmallTab;
+			sFormInit.majorSize /= 2;
+		}
+
+		for (int i = 0; i < sFormInit.numMajor; ++i)
+		{
+			sFormInit.aNumMinors[i] = 2;
+		}
+
+		widgAddForm(psWScreen, &sFormInit);
+
+		W_BUTINIT sButInit;
+		sButInit = W_BUTINIT();
+		sButInit.formID		= MULTIOP_PLAYER_TAB;
+		sButInit.id		= MULTIOP_P_LIST_START;
+		sButInit.x		= 18;
+		sButInit.y		= 18;
+		sButInit.width		= 125;
+		sButInit.height		= MULTIOP_PLAYERHEIGHT;
+		sButInit.pUserData	= NULL;
+		sButInit.pDisplay	= displayPlayerLobby;
+
+		for(unsigned int i = 0; i < sFormInit.numMajor*MAX_PLAYERS_PER_LIST; ++i)
+		{
+			//strcpy(tips[i], pGetLobbyPlayerList()->at(i)->name);
+			sButInit.UserData = 1;
+			sButInit.pUserData = pGetLobbyPlayerList()->size() > i ? (void*)pGetLobbyPlayerList()->at(i) : NULL;
+			sButInit.pText = sButInit.pUserData == NULL ? "Free" : (pGetLobbyPlayerList()->at(i)->status == 1 ? "Player not in lobby" : "Player currently in lobby");
+			sButInit.pTip = sButInit.pUserData == NULL ? "Free" : (pGetLobbyPlayerList()->at(i)->status == 1 ? "Player not in lobby" : "Player currently in lobby");
+			widgAddButton(psWScreen, &sButInit);
+
+			sButInit.id += 1;
+			sButInit.x = (SWORD)(sButInit.x + (150+ 4));
+			if (sButInit.x + 150+ 2 > MULTIOP_PLAYERSW)
+			{
+				sButInit.x = 18;
+				sButInit.y = (SWORD)(sButInit.y + 42);
+			}
+			if (sButInit.y + 50 > 450)
+			{
+				sButInit.y = 18;
+				sButInit.majorID += 1;
+			}
+		}
+	}
+
+	int count = 0;
+
+	if(refresh)
+	{
+		WIDGET *psWidget = NULL;
+		for(unsigned int i = pGetLobbyPlayerList()->size(); i != -1; i--)
+		{
+			if(!psWidget)
+			{
+				psWidget = widgGetFromID(psWScreen, MULTIOP_P_LIST_START + i);
+			}
+			if(psWidget)
+			{
+				W_BUTTON *psBut = (W_BUTTON*)psWidget;
+				psBut->UserData = count + (10*tab);
+				psBut->pUserData = pGetLobbyPlayerList()->size() > i ? (void*)pGetLobbyPlayerList()->at(i) : NULL;
+				psBut->pText = psBut->pUserData == NULL ? "Free" : (pGetLobbyPlayerList()->at(i)->status == 1 ? "Player not in lobby" : "Player currently in lobby");
+				psBut->pTip = psBut->pUserData == NULL ? "Free" : (pGetLobbyPlayerList()->at(i)->status == 1 ? "Player not in lobby" : "Player currently in lobby");
+				psWidget = psWidget->psNext;
+
+				if(psWidget == NULL)
+				{
+					break;
+				}
+			}
+		};
+	}
+}
+#endif
+//NEW
 
 // ////////////////////////////////////////////////////////////////////////////
 // box for players.
@@ -2669,6 +2879,11 @@ static void addChatBox(void)
 
 static void addConsoleBox(void)
 {
+	//NEW
+#ifdef AD_LOBBY_CONNECTION
+	return;
+#endif
+	//NEW
 	if(widgGetFromID(psWScreen, FRONTEND_TOPFORM))
 	{
 		widgDelete(psWScreen, FRONTEND_TOPFORM);
@@ -3871,7 +4086,7 @@ bool startMultiOptions(bool bReenter)
 			bHosted = true;
 
 			challenge.beginGroup("challenge");
-			sstrcpy(game.map, challenge.value("Map", game.map).toString().toAscii().constData());
+			sstrcpy(game.map, challenge.value("Map", game.map).toString().toLatin1().constData());
 			game.hash = levGetMapNameHash(game.map);
 			game.maxPlayers = challenge.value("MaxPlayers", game.maxPlayers).toInt();	// TODO, read from map itself, not here!!
 			game.scavengers = challenge.value("Scavengers", game.scavengers).toBool();
@@ -3908,7 +4123,7 @@ bool startMultiOptions(bool bReenter)
 					QString value = challenge.value("difficulty", "Medium").toString();
 					for (int j = 0; j < ARRAY_SIZE(difficultyList); j++)
 					{
-						if (strcasecmp(difficultyList[j], value.toAscii().constData()) == 0)
+						if (strcasecmp(difficultyList[j], value.toLatin1().constData()) == 0)
 						{
 							game.skDiff[i] = difficultyValue[j];
 							NetPlay.players[i].difficulty = j;
@@ -4219,6 +4434,155 @@ static void displayDifficulty(WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset, 
 	iV_DrawImage(FrontImages, difficultyIcon(j), x + 5, y + 5);
 	iV_DrawText(gettext(difficultyList[j]), x + 42, y + 22);
 }
+
+//NEW
+#ifdef AD_LOBBY_CONNECTION
+void displayPlayerLobby(WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset, PIELIGHT *pColours)
+{
+	PIELIGHT	light;
+	UDWORD		x = xOffset+psWidget->x;
+	UDWORD		y = yOffset+psWidget->y;
+	UDWORD		j = psWidget->UserData, eval;
+
+	light.byte.a = 0;
+	light.byte.b = 0;
+	light.byte.g = 0;
+	light.byte.r = 0;
+
+	const int nameX = 32;
+
+	drawBlueBox(x,y,psWidget->width,psWidget->height);
+
+	if(j != -1)
+	{
+		SPLAYER *p = (SPLAYER*)psWidget->pUserData;
+		
+		if(!p)
+		{
+			return;
+		}
+
+		if(p->status == 0) // in lobby
+		{
+			light.byte.g = 255;
+		}
+		else
+		{
+			light.byte.r = 255;
+		}
+
+		drawBlueBox(x,y,psWidget->width,psWidget->height,light);
+
+		iV_SetFont(font_regular);
+		if(p->status == 0) //ordinary player
+		{
+			iV_SetTextColour(WZCOL_FORM_TEXT);
+		}
+		else //admin or registered
+		{
+			iV_SetTextColour(WZCOL_GREEN);
+		}
+
+		// name
+		std::string name = p->name;
+		if (iV_GetTextWidth(name.c_str()) > psWidget->width - nameX)
+		{
+			while (!name.empty() && iV_GetTextWidth((name + "...").c_str()) > psWidget->width - nameX)
+			{
+				name.resize(name.size() - 1);  // Clip name.
+			}
+			name += "...";
+		}
+		std::string subText;
+
+		iV_DrawText(name.c_str(), x + nameX, y + (subText.empty()? 22 : 18));
+		if (!subText.empty())
+		{
+			iV_SetFont(font_small);
+			iV_SetTextColour(WZCOL_TEXT_MEDIUM);
+			iV_DrawText(subText.c_str(), x + nameX, y + 28);
+			iV_SetFont(font_regular);
+			iV_SetTextColour(WZCOL_FORM_TEXT);
+		}
+
+		PLAYERSTATS stat = p->rank;
+		if(stat.wins + stat.losses < 5)
+		{
+			iV_DrawImage(FrontImages, IMAGE_MEDAL_DUMMY, x + 4, y + 13);
+		}
+		else
+		{
+			stat = p->rank;
+
+			// star 1 total droid kills
+			eval = stat.totalKills;
+			if(eval >600)
+			{
+				iV_DrawImage(FrontImages, IMAGE_MULTIRANK1, x + 4, y + 3);
+			}
+			else if(eval >300)
+			{
+				iV_DrawImage(FrontImages, IMAGE_MULTIRANK2, x + 4, y + 3);
+			}
+			else if(eval >150)
+			{
+				iV_DrawImage(FrontImages, IMAGE_MULTIRANK3, x + 4, y + 3);
+			}
+
+			// star 2 games played (Cannot use stat.played, since that's just the number of times the player exited via the game menu, not the number of games played.)
+			eval = stat.wins + stat.losses;
+			if(eval >200)
+			{
+				iV_DrawImage(FrontImages, IMAGE_MULTIRANK1, x + 4, y + 13);
+			}
+			else if(eval >100)
+			{
+				iV_DrawImage(FrontImages, IMAGE_MULTIRANK2, x + 4, y + 13);
+			}
+			else if(eval >50)
+			{
+				iV_DrawImage(FrontImages, IMAGE_MULTIRANK3, x + 4, y + 13);
+			}
+
+			// star 3 games won.
+			eval = stat.wins;
+			if(eval >80)
+			{
+				iV_DrawImage(FrontImages, IMAGE_MULTIRANK1, x + 4, y + 23);
+			}
+			else if(eval >40)
+			{
+				iV_DrawImage(FrontImages, IMAGE_MULTIRANK2, x + 4, y + 23);
+			}
+			else if(eval >10)
+			{
+				iV_DrawImage(FrontImages, IMAGE_MULTIRANK3, x + 4, y + 23);
+			}
+
+			// medals.
+			if ((stat.wins >= 6) && (stat.wins > (2 * stat.losses))) // bronze requirement.
+			{
+				if ((stat.wins >= 12) && (stat.wins > (4 * stat.losses))) // silver requirement.
+				{
+					if ((stat.wins >= 24) && (stat.wins > (8 * stat.losses))) // gold requirement
+					{
+						iV_DrawImage(FrontImages, IMAGE_MEDAL_GOLD, x + 16, y + 11);
+					}
+					else
+					{
+						iV_DrawImage(FrontImages, IMAGE_MEDAL_SILVER, x + 16, y + 11);
+					}
+				}
+				else
+				{
+					iV_DrawImage(FrontImages, IMAGE_MEDAL_BRONZE, x + 16, y + 11);
+				}
+			}
+		}
+	}
+}
+#endif
+//NEW
 
 // ////////////////////////////////////////////////////////////////////////////
 void displayPlayer(WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset, PIELIGHT *pColours)

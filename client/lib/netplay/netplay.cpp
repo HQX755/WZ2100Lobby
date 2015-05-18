@@ -54,6 +54,8 @@
 #include "src/version.h"
 #include "src/loadsave.h"
 
+#include <process.h>
+
 #ifdef WZ_OS_LINUX
 #include <execinfo.h>  // Nonfatal runtime backtraces.
 #endif //WZ_OS_LINUX
@@ -88,6 +90,16 @@ static void recvDebugSync(NETQUEUE queue);
 static bool onBanList(const char *ip);
 static void addToBanList(const char *ip, const char *name);
 static void NETfixPlayerCount(void);
+
+//NEW
+#ifdef AD_LOBBY_CONNECTION
+static bool __NETfindGame(void);
+static void HostGame();
+static void SendCloseGame();
+static void SendUpdateGame();
+#endif
+//NEW
+
 /*
  * Network globals, these are part of the new network API
  */
@@ -121,7 +133,7 @@ struct NET_PLAYER_DATA
 NETPLAY	NetPlay;
 PLAYER_IP	*IPlist = NULL;
 static bool		allow_joining = false;
-static	bool server_not_there = false;
+static	bool server_not_there = true;
 static GAMESTRUCT	gamestruct;
 
 // update flags
@@ -135,7 +147,7 @@ int mapDownloadProgress;
  *  * Join a server for a game.
  */
 static Socket* tcp_socket = NULL;               ///< Socket used to talk to a lobby server (hosts also seem to temporarily act as lobby servers while the client negotiates joining the game), or to listen for clients (if we're the host, in which case we use rs_socket (declaration hidden somewhere inside a function) to talk to the lobby server).
-
+static Socket* lobby_socket = NULL;
 static Socket *bsocket = NULL;                  ///< Socket used to talk to the host (clients only). If bsocket != NULL, then tcp_socket == NULL.
 static Socket *connected_bsocket[MAX_CONNECTED_PLAYERS] = { NULL };  ///< Sockets used to talk to clients (host only).
 static SocketSet* socket_set = NULL;
@@ -171,9 +183,575 @@ unsigned NET_PlayerConnectionStatus[CONNECTIONSTATUS_NORMAL][MAX_PLAYERS];
  **            ie ("trunk", "2.1.3", "3.0", ...)
  ************************************************************************************
 **/
+
+
 static char const *versionString = version_getVersionString();
 static int NETCODE_VERSION_MAJOR = 0x20A0;
 static int NETCODE_VERSION_MINOR = 0x25;
+
+// NEW
+#ifdef AD_LOBBY_CONNECTION
+#define MAX_RECV 512
+#define MAX_SEND 512
+
+#define MAX_GAME_NAME_LENGTH 20
+#define MAX_PLAYER_NAME_LENGTH 20
+#define MAX_PASSWORD_LENGTH 20
+
+enum EPacketHeaders
+{
+	CONNECT = 1,
+	CHAT = 2,
+	COMMAND = 3,
+	HOST_GAME = 4,
+	GAME_HOSTED = 5,
+	PLAYER_ADD = 6,
+	GAME_ADD = 7,
+	GAME_STATUS = 8,
+	PLAYER_REMOVE = 9,
+	GAME_REMOVE = 10,
+	PLAYER_DATA = 11,
+	GAME_REFRESH = 12,
+	CHANGE_NAME = 13,
+	REQUEST_PASSWORD = 14,
+	GAME_PLAYER_REMOVE = 15,
+	PLAYER_REFRESH = 16,
+	REJOIN_LOBBY = 17,
+	GAME_REMOVE_PLAYER = 18,
+	JOIN_GAME = 19,
+	EXIT_GAME = 20
+};
+
+enum EPacketSubHeaders
+{
+	BAN_PLAYER = 0xFB,
+	BAN_GAME = 0xFE,
+	SEND_NOTICE = 0xFF
+};
+
+enum EConnectionState
+{
+	CONNECTION_ERROR,
+	CONNECTION_SUCCESS,
+	CONNECTION_NONE
+};
+
+enum EGameState
+{
+	GAME_INLOBBY,
+	GAME_INGAME
+};
+
+enum EPlayerStatus
+{
+	STATUS_LOBBY,
+	STATUS_PLAYING
+};
+
+enum EPlayerAuthority
+{
+	STATUS_PLAYER,
+	STATUS_REGISTERED,
+	STATUS_ADMIN
+};
+
+struct SShutDownPacket
+{
+	SShutDownPacket() : header(0xDEAD)
+	{
+	}
+	uint16_t header;
+};
+
+struct SChatPacket
+{
+	SChatPacket(const char *txt, uint16_t Id) : header(CHAT), id(Id)
+	{
+		memcpy(Text, txt, 128);
+	}
+	SChatPacket() : header(CHAT), id(0)
+	{
+		memset(Text, 0, 128);
+	}
+	uint16_t header;
+	uint16_t id;
+	char Text[128];
+};
+
+struct SNewPPacket
+{
+	SNewPPacket(const char *name, PLAYERSTATS rank) : header(PLAYER_ADD), id(0), status(0), playing(STATUS_LOBBY),
+		Rank(rank)
+	{
+		memcpy(Name, name, MAX_PLAYER_NAME_LENGTH);
+	}
+	SNewPPacket() : header(PLAYER_ADD), id(0), status(0), playing(STATUS_LOBBY)
+	{
+		memset(Name, 0, MAX_PLAYER_NAME_LENGTH);
+		memset(&Rank, 0, sizeof(PLAYERSTATS));
+	}
+	uint16_t header;
+	uint16_t id;
+	char Name[20];
+	PLAYERSTATS Rank;
+	uint8_t status;
+	uint8_t playing;
+};
+
+struct SConnectPacket
+{
+	SConnectPacket(const char *name, PLAYERSTATS rank) : header(CONNECT), id(0), Rank(rank)
+	{
+		sstrcpy(Name, name);
+	}
+	SConnectPacket() : header(CONNECT), id(0)
+	{
+		memset(Name, 0, MAX_PLAYER_NAME_LENGTH);
+		memset(&Rank, 0, sizeof(PLAYERSTATS));
+	}
+	uint16_t header;
+	uint16_t id;
+	char Name[20];
+	PLAYERSTATS Rank;
+};
+
+struct SPlayerDataPacket
+{
+	SPlayerDataPacket(uint16_t Id, uint8_t Status) : header(PLAYER_DATA), id(Id), status(Status)
+	{
+	}
+	SPlayerDataPacket() : header(PLAYER_DATA), id(0), status(STATUS_PLAYER)
+	{
+	}
+	uint16_t header;
+	uint16_t id;
+	uint8_t status;
+};
+
+struct SNewGPacket
+{
+	SNewGPacket(uint16_t Id, uint16_t HostId, const char *name, const char *map, const char *Mods, 
+		const char *Ip, const char *version, uint8_t players, uint8_t maxPlayers, PLAYERSTATS minRank, PLAYERSTATS maxRank,
+		uint32_t version_major, uint32_t version_minor, uint8_t MapMod, uint8_t PrivateGame) : 
+		header(GAME_ADD), 
+		id(Id),
+		hostId(HostId),
+		Players(players),
+		MaxPlayers(maxPlayers),
+		game_version_major(version_major),
+		game_version_minor(version_minor),
+		mapMod(MapMod),
+		privateGame(PrivateGame),
+		MinRank(minRank),
+		MaxRank(maxRank)
+	{
+		sstrcpy(Name, name);
+		sstrcpy(ip, Ip);
+		sstrcpy(Map, map);
+		sstrcpy(Version, version);
+		sstrcpy(mods, Mods);
+	};
+	SNewGPacket() : 
+		header(GAME_ADD),
+		id(0),
+		hostId(0),
+		Players(0),
+		MaxPlayers(0),
+		game_version_major(NETGetMajorVersion()),
+		game_version_minor(NETGetMinorVersion()),
+		mapMod(0),
+		privateGame(0)
+	{
+	}
+	uint16_t header;
+	uint16_t id;
+	uint16_t hostId;
+	char Name[20];
+	char ip[20];
+	char Map[20];
+	char Version[10];
+	char mods[20];
+	uint8_t Players;
+	uint8_t MaxPlayers;
+	PLAYERSTATS MinRank;
+	PLAYERSTATS MaxRank;
+	uint32_t game_version_major;
+	uint32_t game_version_minor;
+	uint8_t mapMod;
+	uint8_t privateGame;
+};
+
+struct SRemovePPacket
+{
+	SRemovePPacket(uint16_t Id) : header(PLAYER_REMOVE), id(Id)
+	{
+	}
+	SRemovePPacket() : header(PLAYER_REMOVE), id(0)
+	{
+	}
+	uint16_t header;
+	uint16_t id;
+};
+
+struct SRemoveGPacket
+{
+	SRemoveGPacket(uint16_t Id) : header(GAME_REMOVE), id(Id)
+	{
+	}
+	SRemoveGPacket() : header(GAME_REMOVE), id(0)
+	{
+	}
+	uint16_t header;
+	uint16_t id;
+};
+
+struct SGRemovePPacket
+{
+	SGRemovePPacket(uint16_t Id, uint8_t Reason) : header(GAME_REMOVE_PLAYER), id(Id), reason(Reason)
+	{
+	}
+	SGRemovePPacket() : header(GAME_REMOVE_PLAYER), id(0), reason(0)
+	{
+	}
+	uint16_t header;
+	uint16_t id;
+	uint8_t reason;
+};
+
+struct SChangeNamePacket
+{
+	SChangeNamePacket(uint16_t Id, const char* Name, PLAYERSTATS Stats) : header(CHANGE_NAME), id(Id), stats(Stats)
+	{
+		sstrcpy(name, Name);
+	}
+	SChangeNamePacket() : header(CHANGE_NAME), id(0)
+	{
+		memset(name, 0, MAX_GAME_NAME_LENGTH);
+		memset(&stats, 0, sizeof(PLAYERSTATS));
+	}
+	uint16_t header;
+	uint16_t id;
+	char name[20];
+	PLAYERSTATS stats;
+};
+
+struct SGameStatusPacket
+{
+	SGameStatusPacket(uint16_t Id, uint8_t Status) : header(GAME_STATUS), id(Id), status(Status)
+	{
+	}
+	SGameStatusPacket() : header(GAME_STATUS), id(0), status(STATUS_LOBBY)
+	{
+	}
+	uint16_t header;
+	uint16_t id;
+	uint8_t status;
+};
+
+struct SGameHostPacket
+{
+	SGameHostPacket(uint16_t id) : header(HOST_GAME), gId(id)
+	{
+	}
+	SGameHostPacket() : header(HOST_GAME), gId(0)
+	{
+	}
+	uint16_t header;
+	uint16_t gId;
+};
+
+struct SRefreshGamePacket
+{
+	SRefreshGamePacket(uint16_t id, uint8_t Players) : header(GAME_REFRESH), gId(id), players(Players)
+	{
+	}
+	SRefreshGamePacket() : header(GAME_REFRESH), gId(0), players(0)
+	{
+	}
+	uint16_t header;
+	uint16_t gId;
+	uint8_t players;
+};
+
+struct SRefreshPlayerPacket
+{
+	SRefreshPlayerPacket(uint16_t Id, uint8_t Playing) : header(PLAYER_REFRESH), id(Id), playing(Playing)
+	{
+	}
+	SRefreshPlayerPacket() : header(PLAYER_REFRESH), id(0), playing(STATUS_LOBBY)
+	{
+	}
+	uint16_t header;
+	uint16_t id;
+	uint8_t playing;
+};
+
+struct SRequestPasswordPacket
+{
+	SRequestPasswordPacket(const char *Name, const char *Password) : header(REQUEST_PASSWORD)
+	{
+		sstrcpy(name, Name);
+		sstrcpy(password, Password);
+	}
+	SRequestPasswordPacket() : header(REQUEST_PASSWORD)
+	{
+		memset(name, 0, MAX_PLAYER_NAME_LENGTH);
+		memset(password, 0, MAX_PASSWORD_LENGTH);
+	}
+	uint16_t header;
+	char name[20];
+	char password[20];
+};
+
+struct SJoinGamePacket
+{
+	SJoinGamePacket(uint16_t id) : header(JOIN_GAME), gId(id)
+	{
+	}
+	SJoinGamePacket() : header(JOIN_GAME), gId(0)
+	{
+	}
+	uint16_t header;
+	uint16_t gId;
+};
+
+struct SExitGamePacket
+{
+	SExitGamePacket() : header(EXIT_GAME)
+	{
+	}
+	uint16_t header;
+};
+
+static bool bConnectedToLobby = false;
+
+static uint16_t		LobbyId = 0;
+static uint16_t		LobbyGameId = 0;
+static uint8_t		GameCount = 0;
+static uint32_t		PlayerCount = 0;
+static uint8_t		ConnectionState = 2; //unused
+
+static SNewPPacket AddPlayer;
+static SNewGPacket AddGame;
+
+//functions..
+
+static HANDLE				m_NetHandle = INVALID_HANDLE_VALUE;
+static HANDLE				hWaitForListener = INVALID_HANDLE_VALUE;
+static LPCRITICAL_SECTION	m_NetMutex = new CRITICAL_SECTION;
+
+class CriticalSection
+{
+private:
+	LPCRITICAL_SECTION sec;
+
+public:
+	CriticalSection(LPCRITICAL_SECTION _sec) : sec(_sec)
+	{
+		EnterCriticalSection(sec);
+	}
+
+	~CriticalSection()
+	{
+		LeaveCriticalSection(sec);
+	}
+};
+
+#define MUTEX_LOCK(MUTEX) (EnterCriticalSection(MUTEX))
+#define MUTEX_UNLOCK(MUTEX) (LeaveCriticalSection(MUTEX));
+
+// NEW
+
+std::vector<SPLAYER*> LobbyPlayerList;
+
+void GetLobbyPlayerList(std::vector<SPLAYER*> *list)
+{
+	MUTEX_LOCK(m_NetMutex);
+	list->insert(list->begin(), LobbyPlayerList.begin(), LobbyPlayerList.end());
+	MUTEX_UNLOCK(m_NetMutex);
+}
+
+std::vector<SPLAYER*> *pGetLobbyPlayerList()
+{
+	std::shared_ptr<CriticalSection>(new CriticalSection(m_NetMutex));
+	return &LobbyPlayerList;
+};
+
+void AddPlayerToLobby(SPLAYER *p)
+{
+	LobbyPlayerList.push_back(p);
+}
+
+void RemovePlayerFromLobby(SPLAYER *p)
+{
+	std::vector<SPLAYER*>::iterator it = std::find(LobbyPlayerList.begin(), LobbyPlayerList.end(), p);
+	if(it != LobbyPlayerList.end())
+	{
+		LobbyPlayerList.erase(it);
+	}
+}
+
+unsigned int GetPlayerCount()
+{
+	return PlayerCount;
+}
+
+unsigned int GetGameCount()
+{
+	return GameCount;
+}
+
+bool CheckPacket(uint8_t *data, uint32_t size)
+{
+	if(size < sizeof(uint16_t))
+	{
+		return false;
+	}
+
+	uint16_t header = *(uint16_t*)data;
+	if(header == CHAT || header == COMMAND || header == CONNECT || header == HOST_GAME ||
+		header == GAME_ADD || header == PLAYER_ADD || header == GAME_HOSTED || header == PLAYER_DATA ||
+		header == GAME_REFRESH || header == CHANGE_NAME || header >> COMMAND & (BAN_PLAYER | BAN_GAME | SEND_NOTICE))
+	{
+		return true;
+	}
+
+	return false;	
+}
+
+bool SendData(uint8_t *data, uint32_t size)
+{
+	std::shared_ptr<CriticalSection>(new CriticalSection(m_NetMutex));
+
+	if(!CheckPacket(data, size))
+	{
+		return false;
+	}
+
+	if(!bConnectedToLobby)
+	{
+		return false;
+	}
+
+	size_t s = writeAll(lobby_socket, (void*)data, size);
+	if(s == SOCKET_ERROR)
+	{
+		bConnectedToLobby = false;
+		socketClose(lobby_socket);
+		lobby_socket = NULL;
+		return false;
+	}
+
+	return true;
+}
+
+void HostGame()
+{
+	SNewGPacket p;
+	p.header = HOST_GAME;
+	p.id = 0;
+	p.hostId = 0;
+	sstrcpy(p.Map, game.map);
+	p.Players = 1;
+	p.MaxPlayers = game.maxPlayers;
+	p.game_version_major = NETCODE_VERSION_MAJOR;
+	p.game_version_minor = NETCODE_VERSION_MINOR;
+	p.privateGame = false;
+	p.mapMod = 0;
+
+	memset(&p.MinRank, 0, sizeof(PLAYERSTATS));
+	memset(&p.MaxRank, 0, sizeof(PLAYERSTATS));
+
+	sstrcpy(p.mods, "");
+	sstrcpy(p.Version, version_getVersionString());
+	sstrcpy(p.Name, game.name);
+
+	SendData((uint8_t*)&p, sizeof(SNewGPacket));
+	SendStatus(STATUS_PLAYING);
+}
+
+void JoinGame(uint16_t id)
+{
+	SJoinGamePacket p = SJoinGamePacket(id);
+
+	SendData((uint8_t*)&p, sizeof(SJoinGamePacket));
+}
+
+void ExitGame()
+{
+	SExitGamePacket p = SExitGamePacket();
+
+	SendData((uint8_t*)&p, sizeof(SExitGamePacket));
+}
+
+void Chat(const char *txt)
+{
+	SChatPacket p = SChatPacket(txt, LobbyId);
+
+	if(SendData((uint8_t*)&p, sizeof(SChatPacket)))
+	{
+		addConsoleMessage(_(std::string(sPlayer + std::string(": ") + txt).c_str()), DEFAULT_JUSTIFY, -1);
+	}
+	else
+	{
+		addConsoleMessage(_("Couldn't send message."), DEFAULT_JUSTIFY, -1);
+	}
+}
+
+void AddLobbyConsoleMessage(std::string str)
+{
+	Chat(str.c_str());
+}
+
+void ChangeName(const char *txt, PLAYERSTATS stats)
+{
+	SChangeNamePacket p = SChangeNamePacket(LobbyId, txt, stats);
+
+	SendData((uint8_t*)&p, sizeof(SChangeNamePacket));
+}
+
+void SendStatus(uint8_t Status)
+{
+	SGameStatusPacket p = SGameStatusPacket(LobbyId, Status);
+
+	SendData((uint8_t*)&p, sizeof(SGameStatusPacket));
+}
+
+void SendCloseGame()
+{
+	SRemoveGPacket p = SRemoveGPacket(LobbyGameId);
+
+	SendData((uint8_t*)&p, sizeof(SRemoveGPacket));
+}
+
+void SendUpdateGame()
+{
+	SRefreshGamePacket p = SRefreshGamePacket(LobbyGameId, NetPlay.playercount);
+
+	SendData((uint8_t*)&p, sizeof(SRefreshGamePacket));
+}
+
+void RejoinLobby()
+{
+	if(LobbyPlayerList.size())
+	{
+		if(strcmp(LobbyPlayerList[0]->name, sPlayer) != 0)
+		{
+			sstrcpy(LobbyPlayerList[0]->name, sPlayer);
+
+			PLAYERSTATS playerStats;
+			loadMultiStats(sPlayer,&playerStats);
+
+			LobbyPlayerList[0]->rank = playerStats;
+			ChangeName(sPlayer, playerStats);
+		}
+	}
+
+	SendStatus(STATUS_LOBBY);
+}
+
+#endif
+//NEW
 
 bool NETisCorrectVersion(uint32_t game_version_major, uint32_t game_version_minor)
 {
@@ -1107,8 +1685,11 @@ int NETinit(bool bFirstCall)
 	if(bFirstCall)
 	{
 		debug(LOG_NET, "NETPLAY: Init called, MORNIN'");
-
-		memset(&NetPlay.games, 0, sizeof(NetPlay.games));
+		//NEW
+#ifndef AD_LOBBY_CONNECTION
+		memset(&NetPlay.games, 0, sizeof(NetPlay.games)); //FIX ME!
+#endif
+		//NEW
 		// NOTE NetPlay.isUPNP is already set in configuration.c!
 		NetPlay.bComms = true;
 		NetPlay.GamePassworded = false;
@@ -2151,6 +2732,28 @@ error:
 
 static void NETregisterServer(int state)
 {
+	//NEW
+#ifdef USE_AD_SERVER_CONNECTION
+	if(state == WZ_SERVER_CONNECT)
+	{
+		if(__NETfindGame())
+		{
+			HostGame();
+			server_not_there = false;
+		}
+	}
+	else if(state == WZ_SERVER_DISCONNECT)
+	{
+		SendCloseGame();
+		SendStatus(STATUS_PLAYING);
+	}
+	else
+	{
+		SendUpdateGame();
+	}
+	return;
+#endif
+	//NEW
 	static Socket* rs_socket = NULL;
 	static int registered = 0;
 
@@ -2317,7 +2920,11 @@ static void NETallowJoining(void)
 	if (allow_joining == false) return;
 	ASSERT(NetPlay.isHost, "Cannot receive joins if not host!");
 
+	//NEW
+#ifndef AD_LOBBY_CONNECTION
 	NETregisterServer(WZ_SERVER_CONNECT);
+#endif
+	//NEW
 
 	// This is here since we need to get the status, before we can show the info.
 	// FIXME: find better location to stick this?
@@ -2715,7 +3322,7 @@ bool NEThostGame(const char* SessionName, const char* PlayerName,
 	gamestruct.game_version_major = NETCODE_VERSION_MAJOR;	// Netcode Major version
 	gamestruct.game_version_minor = NETCODE_VERSION_MINOR;	// NetCode Minor version
 //	gamestruct.privateGame = 0;								// if true, it is a private game
-	gamestruct.pureMap = game.isMapMod;								// If map-mod...
+	gamestruct.pureMap = game.isMapMod;						// If map-mod...
 	gamestruct.Mods = 0;										// number of concatenated mods?
 	gamestruct.gameId  = 0;
 	gamestruct.limits = 0x0;									// used for limits
@@ -2747,7 +3354,7 @@ bool NEThostGame(const char* SessionName, const char* PlayerName,
 
 	allow_joining = true;
 
-	NETregisterServer(WZ_SERVER_DISCONNECT);
+	NETregisterServer(WZ_SERVER_CONNECT);
 
 	debug(LOG_NET, "Hosting a server. We are player %d.", selectedPlayer);
 
@@ -2766,10 +3373,445 @@ bool NEThaltJoining(void)
 	return true;
 }
 
+//NEW
+#ifdef AD_LOBBY_CONNECTION
+std::string GetPlayerNameById(uint16_t id)
+{
+	for(unsigned int i = 0; i < LobbyPlayerList.size(); ++i)
+	{
+		if(LobbyPlayerList[i]->id == id)
+		{
+			return LobbyPlayerList[i]->name;
+		}
+	}
+
+	return "";
+}
+
+SPLAYER *GetPlayerById(uint16_t id)
+{
+	for(unsigned int i = 0; i < LobbyPlayerList.size(); ++i)
+	{
+		if(LobbyPlayerList[i]->id == id)
+		{
+			return LobbyPlayerList[i];
+		}
+	}
+
+	return NULL;
+}
+
+void ParsePacket(uint8_t *data, uint32_t size)
+{
+	uint16_t header = *(uint16_t*)data;
+	SPLAYER *p;
+
+	switch(header)
+	{
+		case CHAT:
+			{
+				SChatPacket ChatPacket = *(SChatPacket*)data;
+
+				if(ChatPacket.id == LobbyId)
+				{
+					break;
+				}
+
+				addConsoleMessage(_((std::string(GetPlayerNameById(ChatPacket.id)) + std::string(": ") + std::string(ChatPacket.Text)).c_str()), 
+					DEFAULT_JUSTIFY, -1);
+
+				break;
+			}
+		case GAME_HOSTED:
+			{
+				SGameHostPacket HostGame = *(SGameHostPacket*)data;
+
+				LobbyGameId = HostGame.gId;
+
+				addConsoleMessage("System: Game hosted and shown in Lobby.", DEFAULT_JUSTIFY, SYSTEM_MESSAGE);
+				server_not_there = false;
+
+				break;
+			}
+		case PLAYER_ADD:
+			{
+				AddPlayer = *(SNewPPacket*)data;
+
+				p = new SPLAYER;
+				p->id = AddPlayer.id;
+				p->status = AddPlayer.status;
+
+				sstrcpy(p->name, AddPlayer.Name);
+				p->rank = AddPlayer.Rank;
+
+				if(p->id != LobbyId)
+				{
+					LobbyPlayerList.push_back(p);
+				}
+
+				PlayerCount++;
+
+				break;	
+			}
+		case GAME_ADD:
+			{
+				AddGame = *(SNewGPacket*)data;
+				
+				for(int i = 0; i < MaxGames; ++i)
+				{
+					if(!NetPlay.games[i].gameId)
+					{
+						NetPlay.games[i].GAMESTRUCT_VERSION = 3;
+					
+						NetPlay.games[i].gameId = AddGame.id;
+						NetPlay.games[i].desc.dwMaxPlayers = AddGame.MaxPlayers;
+						NetPlay.games[i].desc.dwCurrentPlayers = AddGame.Players;
+						NetPlay.games[i].desc.dwSize = sizeof(gamestruct.desc);
+						NetPlay.games[i].game_version_major = AddGame.game_version_major;
+						NetPlay.games[i].game_version_minor = AddGame.game_version_minor;
+
+						sstrcpy(NetPlay.games[i].hostname, GetPlayerNameById(AddGame.hostId).c_str());
+						sstrcpy(NetPlay.games[i].name, AddGame.Name);
+						sstrcpy(NetPlay.games[i].versionstring, AddGame.Version);
+						sstrcpy(NetPlay.games[i].desc.host, AddGame.ip);
+
+						NetPlay.games[i].privateGame = AddGame.privateGame;
+						
+						GameCount++;
+						break;
+					}
+				}
+
+				break;
+			}
+		case GAME_STATUS:
+			{
+				SGameStatusPacket status = *(SGameStatusPacket*)data;
+
+				p = GetPlayerById(status.id);
+
+				if(p != NULL)
+				{
+					p->status = status.status;
+				}
+
+				break;
+			}
+		case GAME_REMOVE:
+			{
+				SRemoveGPacket RemoveGame = *(SRemoveGPacket*)data;
+
+				for(int i = 0; i < MaxGames; ++i)
+				{
+					if(NetPlay.games[i].gameId == RemoveGame.id)
+					{
+						memset(&NetPlay.games[i], 0x00, sizeof(GAMESTRUCT));
+						break;
+					}
+				}
+
+				GameCount--;
+				break;
+			}
+		case GAME_REFRESH:
+			{
+				SRefreshGamePacket RefreshGame = *(SRefreshGamePacket*)data;
+
+				for(int i = 0; i < MaxGames; ++i)
+				{
+					if(NetPlay.games[i].gameId == RefreshGame.gId)
+					{
+						NetPlay.games[i].desc.dwCurrentPlayers = RefreshGame.players;
+						break;
+					}
+				}
+
+				break;
+			}
+		case PLAYER_REMOVE:
+			{
+				SRemovePPacket RemovePlayer = *(SRemovePPacket*)data;
+
+				for(unsigned int i = 0; i < LobbyPlayerList.size(); ++i)
+				{
+					if(LobbyPlayerList[i]->id == RemovePlayer.id)
+					{
+						LobbyPlayerList.erase(LobbyPlayerList.begin() + i);
+						break;
+					}
+				}
+
+				PlayerCount--;
+
+				break;
+			}
+		case PLAYER_DATA:
+			{
+				SPlayerDataPacket PlayerData = *(SPlayerDataPacket*)data;
+
+				LobbyId = PlayerData.id;
+			
+				PLAYERSTATS stats;
+				loadMultiStats(sPlayer, &stats);
+
+				LobbyPlayerList.push_back(new SPLAYER(0, sPlayer, stats, PlayerData.status));
+
+				if(LobbyPlayerList.size())
+				{
+					LobbyPlayerList[0]->status = *(uint8_t*)(data + sizeof(uint16_t) + sizeof(uint8_t));
+				}
+
+				break;
+			}
+		case CHANGE_NAME:
+			{
+				SChangeNamePacket ChangeName = *(SChangeNamePacket*)data;
+
+				if(ChangeName.id == LobbyId)
+				{
+					if(LobbyPlayerList.size())
+					{
+						strcpy_s(LobbyPlayerList[0]->name, ChangeName.name);
+						strcpy_s(sPlayer, LobbyPlayerList[0]->name);
+
+						NETchangePlayerName(selectedPlayer, sPlayer);
+
+						break;
+					}
+
+					break;
+				}
+				for(unsigned int i = 0; i < LobbyPlayerList.size(); ++i)
+				{
+					if(LobbyPlayerList[i]->id == ChangeName.id)
+					{
+						addConsoleMessage(_(std::string(std::string(LobbyPlayerList[i]->name) + std::string(" -> ") + std::string(ChangeName.name)).c_str()),
+							DEFAULT_JUSTIFY, -1);
+
+						strcpy(LobbyPlayerList[i]->name, ChangeName.name);
+
+						break;
+					}
+				}
+
+				break;
+			}
+		case 0xDEAD:
+			{
+				bConnectedToLobby = false;
+				addConsoleMessage(_("Server shutdown."), DEFAULT_JUSTIFY, -1);
+
+				break;
+			}
+		default:
+			{
+				debug(LOG_NET, "Received unknown packet. Header: %d", *(uint16_t*)data);
+			}
+	}
+}
+
+char LobbyInput[1024];
+
+unsigned int __stdcall NETListen(LPVOID nil)
+{
+	unsigned int ticks = GetTickCount();
+	size_t size;
+
+	SetEvent(hWaitForListener);
+
+	do
+	{
+		size = readNoInt(lobby_socket, &LobbyInput, MAX_RECV);
+		MUTEX_LOCK(m_NetMutex);
+		if(size == 0)
+		{
+			bConnectedToLobby = false;
+			socketClose(lobby_socket);
+			lobby_socket = NULL;
+		}
+		else if(size > 0 && size != SOCKET_ERROR)
+		{
+			ParsePacket((uint8_t*)&LobbyInput, size);
+		}
+		else
+		{
+			debug(LOG_ERROR, "Failed when reading data: %d", WSAGetLastError());
+			if(WSAGetLastError() != WSAEWOULDBLOCK)
+			{
+				bConnectedToLobby = false;
+				//socketClose(lobby_socket);
+				//lobby_socket = NULL;
+			}
+		}
+		MUTEX_UNLOCK(m_NetMutex);
+	} while(bConnectedToLobby && lobby_socket != NULL);
+
+	return 0;
+}
+
+bool __NETfindGame(void)
+{
+	SocketAddress* hosts;
+	unsigned int gamecount = 0;
+	uint32_t gamesavailable;
+	int result = 0;
+	debug(LOG_NET, "Looking for games...");
+
+	if(bConnectedToLobby)
+	{
+		return true;
+	}
+
+	if(m_NetHandle != INVALID_HANDLE_VALUE)
+	{
+		WaitForSingleObject(m_NetHandle, INFINITE);
+
+		CloseHandle(m_NetHandle);
+		m_NetHandle = INVALID_HANDLE_VALUE;
+	}
+	if(hWaitForListener != INVALID_HANDLE_VALUE)
+	{
+		WaitForSingleObject(hWaitForListener, INFINITE);
+
+		CloseHandle(hWaitForListener);
+		hWaitForListener = INVALID_HANDLE_VALUE;
+	}
+	
+	if (getLobbyError() == ERROR_INVALID || getLobbyError() == ERROR_KICKED || getLobbyError() == ERROR_HOSTDROPPED)
+	{
+		return false;
+	}
+
+	setLobbyError(ERROR_NOERROR);
+
+	InitializeCriticalSection(m_NetMutex);
+
+	NetPlay.games[0].desc.dwSize = 0;
+	NetPlay.games[0].desc.dwCurrentPlayers = 0;
+	NetPlay.games[0].desc.dwMaxPlayers = 0;
+
+	if(!NetPlay.bComms)
+	{
+		selectedPlayer	= NET_HOST_ONLY;		// Host is always 0
+		NetPlay.isHost		= true;
+		NetPlay.hostPlayer	= NET_HOST_ONLY;
+		return true;
+	}
+	if ((hosts = resolveHost(masterserver_name, masterserver_port)) == NULL)
+	{
+		debug(LOG_ERROR, "Cannot resolve hostname \"%s\": %s", masterserver_name, strSockError(getSockErr()));
+		setLobbyError(ERROR_CONNECTION);
+		return false;
+	}
+
+	if (lobby_socket != NULL)
+	{
+		debug(LOG_NET, "Deleting lobby_socket %p", lobby_socket);
+
+		socketClose(lobby_socket);
+		lobby_socket = NULL;
+	}
+
+	lobby_socket = socketOpenAny(hosts, 15000);
+	
+	deleteSocketAddress(hosts);
+	hosts = NULL;
+
+	if (lobby_socket == NULL)
+	{
+		debug(LOG_ERROR, "Cannot connect to \"%s:%d\": %s", masterserver_name, masterserver_port, strSockError(getSockErr()));
+		setLobbyError(ERROR_CONNECTION);
+		return false;
+	}
+	debug(LOG_NET, "New lobby_socket = %p", lobby_socket);
+	// client machines only need 1 socket set / or nil
+
+	hWaitForListener = (HANDLE)CreateEvent(NULL, false, false, TEXT("hWaitForListener"));
+	m_NetHandle = (HANDLE)_beginthreadex(NULL, 0, NETListen, NULL, 0, NULL);
+
+	DWORD dwTicks = GetTickCount();
+
+	while(true)
+	{
+		if(WaitForSingleObject(hWaitForListener, 100) != WAIT_TIMEOUT)
+		{
+			break;
+		}
+		if(GetTickCount() > dwTicks + CLOCKS_PER_SEC * 10)
+		{
+			bConnectedToLobby = false;
+			socketClose(lobby_socket);
+			lobby_socket = NULL;
+
+			return false;
+		}
+	}
+
+	if(m_NetHandle == INVALID_HANDLE_VALUE)
+	{
+		debug(LOG_NET, "Invalid thread handle");
+
+		socketClose(lobby_socket);
+		lobby_socket = NULL;
+		bConnectedToLobby = false;
+
+		return false;
+	}
+
+	debug(LOG_NET, "Sending connect packet");
+
+	PLAYERSTATS playerStats;
+	loadMultiStats(sPlayer,&playerStats);
+
+	SConnectPacket p(sPlayer, playerStats);
+	if (writeAll(lobby_socket, &p, sizeof(SConnectPacket)) != SOCKET_ERROR)
+	{
+		PlayerCount++;
+		bConnectedToLobby = true;
+	}
+	else
+	{
+		if (result == SOCKET_ERROR)
+		{
+			debug(LOG_NET, "Server socket ecountered error: %s", strSockError(getSockErr()));
+		}
+		else
+		{
+			debug(LOG_NET, "Server didn't respond (timeout)");
+		}
+		socketClose(lobby_socket);
+		lobby_socket = NULL;
+
+		// when we fail to receive a game count, bail out
+		setLobbyError(ERROR_CONNECTION);
+		return false;
+	}
+
+	debug(LOG_NET, "receiving info on %u game(s)", (unsigned int)gamesavailable);
+
+	// Clear old games from list.
+	memset(NetPlay.games, 0x00, sizeof(NetPlay.games));
+
+	return true;
+}
+#endif
+// NEQW
+
 // ////////////////////////////////////////////////////////////////////////
 // find games on open connection
 bool NETfindGame(void)
 {
+#ifdef AD_LOBBY_CONNECTION
+	if(!bConnectedToLobby)
+	{
+		return __NETfindGame();
+	}
+	else
+	{
+		RejoinLobby();
+	}
+	return true;
+#endif
 	SocketAddress* hosts;
 	unsigned int gamecount = 0;
 	uint32_t gamesavailable;
@@ -3064,6 +4106,23 @@ bool NETjoinGame(const char* host, uint32_t port, const char* playername)
 			NetPlay.players[index].allocated = true;
 			sstrcpy(NetPlay.players[index].name, playername);
 			NetPlay.players[index].heartbeat = true;
+
+			//NEW
+#ifdef AD_LOBBY_CONNECTION
+			uint16_t id = 0;
+			for(int i = 0; i < MaxGames; ++i)
+			{
+				if(strcmp(NetPlay.games[i].desc.host, host) == 0)
+				{
+					LobbyGameId = id = NetPlay.games[i].gameId;
+				}
+			}
+			if(id != 0)
+			{
+				JoinGame(id);
+			}
+#endif
+			//NEW
 
 			return true;
 		}

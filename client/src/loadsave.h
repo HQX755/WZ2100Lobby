@@ -57,7 +57,7 @@ extern bool		bRequestLoad;
  */
 /***************************************************************************/
 
-extern void		drawBlueBox		(UDWORD x,UDWORD y, UDWORD w, UDWORD h);
+extern void		drawBlueBox		(UDWORD x,UDWORD y, UDWORD w, UDWORD h, PIELIGHT bColor = WZCOL_MENU_BORDER);
 
 extern bool		addLoadSave(LOADSAVE_MODE mode, const char *title);
 extern bool		closeLoadSave	(void);

@@ -705,8 +705,8 @@ static void displayLoadSaveEdit(WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset
 }
 
 // ////////////////////////////////////////////////////////////////////////////
-void drawBlueBox(UDWORD x,UDWORD y, UDWORD w, UDWORD h)
+void drawBlueBox(UDWORD x,UDWORD y, UDWORD w, UDWORD h, PIELIGHT bColor)
 {
-	pie_BoxFill(x - 1, y - 1, x + w + 1, y + h + 1, WZCOL_MENU_BORDER);
+	pie_BoxFill(x - 1, y - 1, x + w + 1, y + h + 1, bColor);
 	pie_BoxFill(x, y , x + w, y + h, WZCOL_MENU_BACKGROUND);
 }

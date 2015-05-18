@@ -27,6 +27,7 @@
 
 #include "lib/netplay/netplay.h"
 
+#ifndef AD_LOBBY_CONNECTION
 struct PLAYERSTATS
 {
 	uint32_t played;						/// propogated stats.
@@ -38,10 +39,12 @@ struct PLAYERSTATS
 	uint32_t recentKills;				// score/kills in last game.
 	uint32_t recentScore;
 };
+#endif
 
 bool saveMultiStats(const char *sFName, const char *sPlayerName, const PLAYERSTATS *playerStats);	// to disk
 bool loadMultiStats(char *sPlayerName, PLAYERSTATS *playerStats);					// form disk
-PLAYERSTATS getMultiStats(UDWORD player);									// get from net
+PLAYERSTATS getMultiStats(UDWORD player);	// get from net
+PLAYERSTATS getLobbyPlayerStats(uint32_t rank[7]);
 bool setMultiStats(uint32_t player, PLAYERSTATS plStats, bool bLocal);  // send to net.
 void updateMultiStatsDamage(UDWORD attacker, UDWORD defender, UDWORD inflicted);
 void updateMultiStatsGames(void);

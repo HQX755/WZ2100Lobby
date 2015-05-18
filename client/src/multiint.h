@@ -39,6 +39,9 @@ const char *getAIName(int player);	///< only run this -after- readAIs() is calle
 int matchAIbyName(const char *name);	///< only run this -after- readAIs() is called
 int getNextAIAssignment(const char *name);
 
+extern bool		SendPositionRequest	(UBYTE player, UBYTE chosenPlayer);
+extern bool		SendColourRequest (UBYTE c, UBYTE col);
+
 extern LOBBY_ERROR_TYPES getLobbyError(void);
 extern void setLobbyError(LOBBY_ERROR_TYPES error_type);
 
@@ -63,7 +66,9 @@ extern bool bHosted;
 
 void	kickPlayer(uint32_t player_id, const char *reason, LOBBY_ERROR_TYPES type);
 void	addPlayerBox(bool);			// players (mid) box
-void loadMapPreview(bool hideInterface);
+void	addOnlineListBox(bool refresh = false, int tab = 0);
+void	addLobbyGamesForm();
+void	loadMapPreview(bool hideInterface);
 
 
 // ////////////////////////////////////////////////////////////////
@@ -118,6 +123,18 @@ void loadMapPreview(bool hideInterface);
 
 // ////////////////////////////////////////////////////////////////
 // GAME OPTIONS SCREEN
+
+//NEW
+#ifdef AD_LOBBY_CONNECTION
+#define MULTIOP_PLAYER_COUNT	10440
+#define MULTIOP_PLAYER_TAB		10441 
+#define MULTIOP_PLAYER_REQUEST	10442
+#define MULTIOP_PLAYERLIST		10443
+#define MULTIOP_P_LIST_START	10444
+#define MULTIOP_P_LIST_END		10544
+#define MULTIOP_HOST_LOBBY		10545
+#endif
+//NEW
 
 #define MULTIOP_PLAYERS			10231
 #define MULTIOP_PLAYERSX		360

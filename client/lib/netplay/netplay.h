@@ -30,6 +30,8 @@
 #include "nettypes.h"
 #include <physfs.h>
 
+
+
 // Lobby Connection errors
 
 enum LOBBY_ERROR_TYPES
@@ -363,5 +365,49 @@ typedef uint16_t GameCrcType;  // Truncate CRC of game state to 16 bits, to save
 void resetSyncDebug();                                              ///< Resets the syncDebug, so syncDebug from a previous game doesn't cause a spurious desynch dump.
 GameCrcType nextDebugSync();                                        ///< Returns a CRC corresponding to all syncDebug() calls since the last nextDebugSync() or resetSyncDebug() call.
 bool checkDebugSync(uint32_t checkGameTime, GameCrcType checkCrc);  ///< Dumps all syncDebug() calls from that gameTime, if the CRC doesn't match.
+
+//NEW
+
+#define AD_LOBBY_CONNECTION
+
+#ifdef AD_LOBBY_CONNECTION
+
+struct PLAYERSTATS
+{
+	uint32_t played;						/// propogated stats.
+	uint32_t wins;
+	uint32_t losses;
+	uint32_t totalKills;
+	uint32_t totalScore;
+
+	uint32_t recentKills;				// score/kills in last game.
+	uint32_t recentScore;
+};
+
+struct SPLAYER
+{
+	SPLAYER()
+	{
+	}
+	SPLAYER(uint16_t _id, const char *_name, PLAYERSTATS _rank, uint8_t _status) : id(_id), status(_status),
+		rank(_rank)
+	{
+		strcpy(name, _name);
+	}
+	uint16_t id;
+	PLAYERSTATS rank;
+	uint8_t status;
+	char name[20];
+};
+
+std::vector<SPLAYER*> *pGetLobbyPlayerList();
+
+unsigned int GetPlayerCount();
+unsigned int GetGameCount();
+
+void AddLobbyConsoleMessage(std::string str);
+void SendStatus(uint8_t status);
+
+#endif
 
 #endif
