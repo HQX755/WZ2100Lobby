@@ -11,11 +11,18 @@
 #include "Net.h"
 #include "Utils.h"
 
-#define MAX_PLAYER_PER_IP 10
-#define GAME_START_ID 10201
-#define MAX_GAMES_PER_IP 1
-#define MAX_GAMES 11
-#define MAX_USERS 1024
+#define MAX_PLAYER_PER_IP		10
+#define GAME_START_ID			10201
+#define MAX_GAMES_PER_IP		1
+#define MAX_GAMES				11
+#define MAX_USERS				1024
+#define MAX_PLAYERS				1024
+#define MAX_CHAT_COUNT			10
+
+#define SERVER_MESSAGE "Welcome to the lobby server."
+
+#define RESET_CHAT_COUNTER_TIME 10000
+#define MAX_INACTIVE_TIME		3600000
 
 static uint16_t PlayerCount = 0;
 static uint8_t GameCount = 0;
@@ -46,23 +53,35 @@ private:
 	std::string m_Name;
 	std::string m_Ip;
 
+	enum NETVersion
+	{
+		NET_VERSION_MINOR,
+		NET_VERSION_MAJOR
+	};
+
 	unsigned long m_ChatCount;
 	unsigned long m_ChatBlockEnd;
 	unsigned long m_FirstChatTime;
 	unsigned long m_JoinTime;
 	unsigned long m_NextRefreshTime;
+	unsigned long m_InactiveTime;
 
 	uint16_t	m_Id;
 	uint16_t	m_IGameId;
 	uint16_t	m_GameId;
-	PLAYERSTATS	m_Rank;
 	uint8_t		m_Status;
 	uint8_t		m_GameStatus;
 
-	bool		m_Allocated;
+	PLAYERSTATS	m_Rank;
+	VERSION		m_Version;
+
+	bool		m_bAllocated;
+	bool		m_bActive;
 
 	CGame	*m_Game;
 	CNet	*m_Connection;
+
+	std::deque<std::pair<uint8_t*, uint32_t>> m_SendQueue;
 
 public:
 
@@ -77,9 +96,11 @@ public:
 		m_Id(-1),
 		m_IGameId(-1),
 		m_GameId(-1),
-		m_Allocated(false),
+		m_bAllocated(false),
+		m_bActive(true),
 		m_ChatBlockEnd(0),
-		m_NextRefreshTime(0)
+		m_NextRefreshTime(0),
+		m_InactiveTime(0)
 	{
 		Initialize();
 	}
@@ -94,6 +115,8 @@ public:
 		m_NextRefreshTime = GetRunTime() + 10000;
 
 		memset(&m_Rank, 0x00, sizeof(PLAYERSTATS));
+		memset(&m_Version, 0x00, sizeof(VERSION));
+
 		m_Connection->BindUser(this);
 	}
 
@@ -109,9 +132,11 @@ public:
 		m_Id = -1;
 		m_IGameId = -1;
 		m_GameId = -1;
-		m_Allocated = false;
+		m_bAllocated = false;
+		m_bActive = true;
 		m_ChatBlockEnd = 0;
 		m_NextRefreshTime = 0;
+		m_InactiveTime = 0;
 
 		Initialize();
 	}
@@ -136,13 +161,18 @@ public:
 	void SetRank(PLAYERSTATS rank);
 	void SetStatus(EUserAuthority status);
 	void SetGameStatus(EGameStatus status);
+	void SetVersion(VERSION version);
 
 	std::string GetName();
 	std::string GetIp();
 
 	PLAYERSTATS GetRank();
+	VERSION		GetVersion();
 
 	bool Allocated();
+	bool Active();
+
+	void SetActiveStatus(bool b);
 
 	void DoChat();
 	void BlockChat(unsigned long dwTime = -1);
@@ -155,6 +185,12 @@ public:
 	CNet	*GetConnection();
 
 	void SetConnection(CNet *conn);
+	void Send(uint8_t *data, uint32_t size);
+	void Send(void *data, uint32_t size);
+	void SendQueue(void *data, uint32_t size);
+	void QueuePopFront();
+
+	std::pair<uint8_t *, uint32_t> *GetQueueData();
 };
 
 typedef std::vector<CUser *> UserVec;
@@ -170,9 +206,11 @@ private:
 	std::string m_Password;
 	std::string m_Mods;
 
-	uint32_t m_GameId;
-	uint8_t m_Players;
-	uint8_t m_MaxPlayers;
+	uint32_t	m_GameId;
+	uint8_t		m_Players;
+	uint8_t		m_MaxPlayers;
+	uint8_t		m_RankLevel;
+
 	PLAYERSTATS m_MinRank;
 	PLAYERSTATS m_MaxRank;
 
@@ -193,7 +231,7 @@ public:
 	};
 
 	CGame(const char* name, const char* map, int MaxPlayers, const char* version, const char* mods, 
-		const char *password, bool mod, bool privateGame) :
+		const char *password, bool mod, bool privateGame, uint8_t rank) :
 		m_Name(name),
 		m_Map(map),
 		m_Players(0),
@@ -203,7 +241,8 @@ public:
 		m_Mods(mods),
 		m_Modded(mod),
 		m_Private(privateGame),
-		m_InLobby(true)
+		m_InLobby(true),
+		m_RankLevel(rank)
 	{
 		Initialize();
 	}
@@ -222,6 +261,7 @@ public:
 	void Update();
 
 	std::string GetMapName();
+	std::string GetGameName();
 	std::string GetGamePassword();
 	std::string GetMods();
 
@@ -239,11 +279,14 @@ public:
 	void SetMaxPlayerCount(uint8_t max);
 
 	CUser *GetHost();
-	uint16_t GetGameID();
-	uint16_t GetHostID();
-	uint8_t GetMaxPlayers();
-	uint8_t GetPlayerCount();
-	uint16_t GetNewIGameID();
+
+	uint16_t	GetGameID();
+	uint16_t	GetHostID();
+	uint16_t	GetNewIGameID();
+
+	uint8_t		GetMaxPlayers();
+	uint8_t		GetPlayerCount();
+	uint8_t		GetRankLevel();
 
 	PLAYERSTATS GetMinRank();
 	PLAYERSTATS GetMaxRank();
@@ -257,7 +300,7 @@ enum EErrorCodes
 
 SShutDownPacket ShutDown();
 
-class CCore
+class CCore : public CInstance<CCore>
 {
 private:
 	std::deque<CUser *>		UserList;
@@ -271,22 +314,19 @@ private:
 	boost::thread	m_NetThread;
 	boost::mutex	m_Mutex;
 
-	boost::asio::io_service m_Service;
+	boost::asio::io_service &m_Service;
 
 public:
 	boost::asio::io_service &GetService();
 
-	CCore() : m_Service(), UserList(), GameList()
+	CCore(boost::asio::io_service &service) : 
+		m_Service(service), 
+		LastError(ERROR_NOERROR)
 	{
 		Initialize();
 	}
 
-	void Initialize()
-	{
-		LoadReservedNames();
-		CreateListener(m_Service);
-	}
-
+	void Initialize();
 	void Run();
 
 	void AddUser(CUser *user);
@@ -304,13 +344,14 @@ public:
 
 	void SendTo(CUser *user, uint8_t *data, uint32_t size);
 	void SendTo(CUser *user, void *data, uint32_t size);
-	void SendToAll(uint8_t *data, uint32_t size);
-	void SendToAll(void *data, uint32_t size, CUser *except = NULL, uint8_t status = UINT8_MAX);
+	void SendToAll(uint8_t *data, uint32_t size, bool append = false);
+	void SendToAll(void *data, uint32_t size, CUser *except = NULL, uint8_t status = UINT8_MAX, VERSION *version = NULL, bool append = false);
 
 	void BlockIp(std::string ip);
 	void UnblockIp(std::string ip);
 	bool IpIsBlocked(std::string ip);
 	bool CheckAnyHostIP(std::string ip);
+	bool CheckUserExists(CUser *user);
 
 	bool MaxConnectionsReached(std::string ip);
 
@@ -340,7 +381,7 @@ public:
 
 CCore *CORE();
 
-class CConsole
+class CConsole : public CInstance<CConsole>
 {
 private:
 	std::deque<std::string> m_CommandVec;
@@ -358,10 +399,16 @@ public:
 
 	~CConsole()
 	{
+		if(m_InputThread != NULL)
+		{
+			Stop();
+			delete m_InputThread;
+		}
 	}
 
 	void Initialize()
 	{
+		m_InputThread = NULL;
 	}
 
 	void Run()

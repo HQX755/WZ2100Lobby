@@ -1110,6 +1110,166 @@ static void removeGames(void)
 	widgDelete(psWScreen,FRONTEND_NOGAMESAVAILABLE);
 }
 
+DWORD WINAPI ChangeMode(LPVOID nul)
+{
+				changeTitleMode(GAMEFIND);
+				bMultiPlayer = false;
+				bMultiMessages = false;
+
+				return 0;
+}
+
+#ifdef AD_LOBBY_CONNECTION
+bool bPlayerOptionsOpened = false;
+bool bAnimateOptions = true;
+
+UWORD wPlaynum = 0;
+
+#define MAX_PLAYERS_PER_LIST 10
+
+bool OpenPlayerOptions(int playnum = 0)
+{
+	WIDGET *psWidget = widgGetFromID(psWScreen, MULTIOP_PLAYERLIST);
+
+	if(!psWidget)
+	{
+		return false;
+	}
+
+	UDWORD offsetX = psWidget->x + psWidget->width;
+	DWORD  offset = playnum / MAX_PLAYERS_PER_LIST;
+	wPlaynum = playnum - offset * MAX_PLAYERS_PER_LIST;
+	UDWORD offsetY = psWidget->y + 30 + 42 * ((playnum < MAX_PLAYERS_PER_LIST + 1 ? playnum : wPlaynum) - 1);
+	wPlaynum -= 1;
+
+	bPlayerOptionsOpened = true;
+
+	if(widgGetFromID(psWScreen, MULTIOP_PLAYER_OPTIONS))
+	{
+		return false;
+	}
+
+	W_FORMINIT sFormInit;
+	sFormInit.formID = FRONTEND_BACKDROP;
+	sFormInit.id = MULTIOP_PLAYER_OPTIONS;
+	sFormInit.style = WFORM_PLAIN;
+	sFormInit.x = offsetX;
+	sFormInit.y = offsetY;
+	sFormInit.width = PLAYER_OPTIONS_W;
+	sFormInit.height = 	PLAYER_OPTIONS_H;
+	// If the window was closed then do open animation.
+	if(bAnimateOptions) {
+		sFormInit.pDisplay = intOpenPlainForm;
+		sFormInit.disableChildren = true;
+	} else {
+	// otherwise just recreate it.
+		sFormInit.pDisplay = intDisplayPlainForm;
+	}
+	if (!widgAddForm(psWScreen, &sFormInit))
+	{
+		return false;
+	}
+
+	// Add the close button.
+	W_BUTINIT sButInit;
+	sButInit.formID = MULTIOP_PLAYER_OPTIONS;
+	sButInit.id = MULTIOP_PLAYER_CLOSE;
+	sButInit.x = PLAYER_OPTIONS_W - CLOSE_WIDTH;
+	sButInit.y = 0;
+	sButInit.width = CLOSE_WIDTH;
+	sButInit.height = CLOSE_HEIGHT;
+	sButInit.pTip = _("Close");
+	sButInit.pDisplay = intDisplayImageHilight;
+	sButInit.UserData = PACKDWORD_TRI(0,IMAGE_CLOSEHILIGHT , IMAGE_CLOSE);
+	if (!widgAddButton(psWScreen, &sButInit))
+	{
+		return false;
+	}
+
+	sButInit.formID = MULTIOP_PLAYER_OPTIONS;
+	sButInit.id = MULTIOP_PLAYER_WHISPER;
+	sButInit.x = 0;
+	sButInit.y = 0;
+	sButInit.width = PLAYER_MESSAGE_WIDTH;
+	sButInit.height = PLAYER_MESSAGE_HEIGHT;
+	sButInit.pTip = _("Send private message to this player");
+	sButInit.pDisplay = intDisplayImageHilight;
+	sButInit.UserData = PACKDWORD_TRI(0,IMAGE_MESSAGE_HI, IMAGE_MESSAGE);
+	if(!widgAddButton(psWScreen, &sButInit))
+	{
+		return false;
+	}
+
+	sButInit.formID = MULTIOP_PLAYER_OPTIONS;
+	sButInit.id = MULTIOP_PLAYER_INVITE;
+	sButInit.x = 0;
+	sButInit.y = PLAYER_MESSAGE_HEIGHT;
+	sButInit.width = PLAYER_MESSAGE_WIDTH;
+	sButInit.height = PLAYER_MESSAGE_HEIGHT;
+	sButInit.pTip = _("Invite this player to your game");
+	sButInit.pDisplay = intDisplayImageHilight;
+	sButInit.UserData = PACKDWORD_TRI(0,IMAGE_INVITE_HI, IMAGE_INVITE);
+	if(!widgAddButton(psWScreen, &sButInit))
+	{
+		return false;
+	}
+
+	return true;
+}
+
+bool ClosePlayerOptions()
+{
+	WIDGET *psWidget;
+	if((psWidget = widgGetFromID(psWScreen, MULTIOP_PLAYER_OPTIONS)) == NULL)
+	{
+		return false;
+	}
+
+	bPlayerOptionsOpened = false;
+
+	widgDelete(psWScreen, MULTIOP_PLAYER_OPTIONS);
+	return true;
+}
+
+#include "lib\sound\audio_id.h"
+
+void SendInvite(UWORD playnum)
+{
+	uint16_t id = 0;
+	BeginRead();
+	{
+		SPLAYER *p = GetPlayer(playnum);
+		if(p == NULL)
+		{
+			return;
+		}
+
+		id = p->id;
+	}
+	EndRead();
+
+	SendSignal(0, id);
+}
+
+void OpenPrivateMessageBox(UWORD playnum)
+{
+	uint16_t id = 0;
+	BeginRead();
+	{
+		SPLAYER *p = GetPlayer(playnum);
+		if(p == NULL)
+		{
+			return;
+		}
+
+		id = p->id;
+	}
+	EndRead();
+
+	//TODO
+}
+#endif
+
 void runGameFind(void )
 {
 	static UDWORD lastupdate=0;
@@ -1130,6 +1290,8 @@ void runGameFind(void )
 		addGames();									//redraw list
 		addConsoleBox();
 	}
+
+	//addGames();
 
 	WidgetTriggers const &triggers = widgRunScreen(psWScreen);
 	unsigned id = triggers.empty()? 0 : triggers.front().widget->id;  // Just use first click here, since the next click could be on another menu.
@@ -1185,6 +1347,32 @@ void runGameFind(void )
 		changeTitleMode(MULTIOPTION);
 
 		SendStatus(1);
+	}
+	if(id >= MULTIOP_P_LIST_START && id <= MULTIOP_P_LIST_END)
+	{
+		if(!bPlayerOptionsOpened)
+		{
+			OpenPlayerOptions(id - MULTIOP_PLAYERLIST);
+		}
+		else
+		{
+			ClosePlayerOptions();
+			OpenPlayerOptions(id - MULTIOP_PLAYERLIST);
+		}
+	}
+	if(id == MULTIOP_PLAYER_CLOSE)
+	{
+		ClosePlayerOptions();
+	}
+	if(id == MULTIOP_PLAYER_INVITE)
+	{
+		SendInvite(wPlaynum);
+		ClosePlayerOptions();
+	}
+	if(id == MULTIOP_PLAYER_WHISPER)
+	{
+		OpenPrivateMessageBox(wPlaynum);
+		ClosePlayerOptions();
 	}
 #endif
 	if (id == CON_PASSWORD)
@@ -1590,6 +1778,36 @@ static void addGameOptions()
 
 	// buttons
 	// game type
+	//NEW
+#ifdef AD_LOBBY_CONNECTION
+	addBlueForm(MULTIOP_OPTIONS,MULTIOP_RANK,_("Rank"),MCOL0,MROW9,MULTIOP_BLUEFORMW,27);
+	addMultiBut(psWScreen,MULTIOP_RANK,MULTIOP_ALL_RANK,MCOL0 + 26 + 10 - 38,2, MULTIOP_BUTW, MULTIOP_BUTH, _("All ranks allowed"),
+		IMAGE_NO_RANK,IMAGE_NO_RANK_HI,true);
+	addMultiBut(psWScreen,MULTIOP_RANK,MULTIOP_RANK_1,MCOL1,2,MULTIOP_BUTW,MULTIOP_BUTH, _("Only player with low rank or higher accepted"),
+		IMAGE_LOW_RANK,IMAGE_LOW_RANK_HI,true);
+	addMultiBut(psWScreen,MULTIOP_RANK,MULTIOP_RANK_2,MCOL2,2,MULTIOP_BUTW,MULTIOP_BUTH, _("Only player with medium rank or higher accepted"),
+		IMAGE_MEDIUM_RANK,IMAGE_MEDIUM_RANK_HI,true);
+	addMultiBut(psWScreen,MULTIOP_RANK,MULTIOP_RANK_3,MCOL3,2,MULTIOP_BUTW,MULTIOP_BUTH, _("Only player with high rank accepted"),
+		IMAGE_HIGH_RANK,IMAGE_HIGH_RANK_HI,true);
+
+	if(game.rank == 0)
+	{
+		widgSetButtonState(psWScreen, MULTIOP_ALL_RANK, WBUT_LOCK);
+	}
+	else if(game.rank == 1)
+	{
+		widgSetButtonState(psWScreen, MULTIOP_RANK_1, WBUT_LOCK);
+	}
+	else if(game.rank == 2)
+	{
+		widgSetButtonState(psWScreen, MULTIOP_RANK_2, WBUT_LOCK);
+	}
+	else 
+	{
+		widgSetButtonState(psWScreen, MULTIOP_RANK_3, WBUT_LOCK);
+	}
+#endif
+	//NEW
 	addBlueForm(MULTIOP_OPTIONS,MULTIOP_GAMETYPE,_("Scavengers"),MCOL0,MROW5,MULTIOP_BLUEFORMW,27);
 	addMultiBut(psWScreen, MULTIOP_GAMETYPE, MULTIOP_CAMPAIGN, MCOL2, 2, MULTIOP_BUTW, MULTIOP_BUTH, _("Scavengers"),
 	            IMAGE_SCAVENGERS_ON, IMAGE_SCAVENGERS_ON_HI, true);
@@ -1735,7 +1953,11 @@ static void addGameOptions()
 			break;
 		}
 
+#ifndef AD_LOBBY_CONNECTION
 	addBlueForm(MULTIOP_OPTIONS, MULTIOP_MAP_PREVIEW, _("Map Preview"), MCOL0, MROW9, MULTIOP_BLUEFORMW, 27);
+#else
+	addBlueForm(MULTIOP_OPTIONS, MULTIOP_MAP_PREVIEW, _("Map Preview"), MCOL0, MROW9 + 29, MULTIOP_BLUEFORMW, 27);
+#endif
 	addMultiBut(psWScreen,MULTIOP_MAP_PREVIEW, MULTIOP_MAP_BUT, MCOL3, 2, MULTIOP_BUTW, MULTIOP_BUTH,
 	            _("Click to see Map"), IMAGE_FOG_OFF, IMAGE_FOG_OFF_HI, true);
 	widgSetButtonState(psWScreen, MULTIOP_MAP_BUT,0); //1 = OFF  0=ON
@@ -1747,20 +1969,39 @@ static void addGameOptions()
 		iV_GetImageHeight(FrontImages,IMAGE_RETURN),
 		_("Return To Previous Screen"), IMAGE_RETURN, IMAGE_RETURN_HI, IMAGE_RETURN_HI);
 
+#ifdef AD_LOBBY_CONNECTION
+	addMultiBut(psWScreen,MULTIOP_OPTIONS,MULTIOP_LOBBY,
+		MULTIOP_CANCELX,MULTIOP_CANCELY + (iV_GetImageHeight(FrontImages,IMAGE_RETURN) + 10),
+		iV_GetImageWidth(FrontImages,IMAGE_LOBBY),
+		iV_GetImageHeight(FrontImages,IMAGE_LOBBY),
+		_("Return To Lobby, you will stay in the game"), IMAGE_LOBBY, IMAGE_LOBBY, IMAGE_LOBBY);
+#endif
+
 	// host Games button
 	if(ingame.bHostSetup && !bHosted && !challengeActive)
 	{
+#ifndef AD_LOBBY_CONNECTION
 		addBlueForm(MULTIOP_OPTIONS, MULTIOP_HOST, _("Start Hosting Game"), MCOL0, MROW11, MULTIOP_BLUEFORMW, 27);
 		addMultiBut(psWScreen, MULTIOP_HOST, MULTIOP_HOST_BUT, MCOL3, 0, MULTIOP_BUTW, MULTIOP_BUTH,
 			_("Start Hosting Game"), IMAGE_HOST, IMAGE_HOST_HI, IMAGE_HOST_HI);
+#else
+		addBlueForm(MULTIOP_OPTIONS, MULTIOP_HOST, _("Start Hosting Game"), MCOL0, MROW9 + 29 * 3, MULTIOP_BLUEFORMW, 27);
+		addMultiBut(psWScreen, MULTIOP_HOST, MULTIOP_HOST_BUT, MCOL3, 0, MULTIOP_BUTW, MULTIOP_BUTH,
+			_("Start Hosting Game"), IMAGE_HOST, IMAGE_HOST_HI, IMAGE_HOST_HI);
+#endif
 	}
 
 	// hosted or hosting.
 	// limits button.
 	if (ingame.bHostSetup)
 	{
+#ifndef AD_LOBBY_CONNECTION
 		addBlueForm(MULTIOP_OPTIONS, MULTIOP_STRUCTLIMITS, challengeActive ? _("Show Structure Limits") : _("Set Structure Limits"),
 						MCOL0, MROW10, MULTIOP_BLUEFORMW, 27);
+#else
+		addBlueForm(MULTIOP_OPTIONS, MULTIOP_STRUCTLIMITS, challengeActive ? _("Show Structure Limits") : _("Set Structure Limits"),
+						MCOL0, MROW9 + 29 * 2, MULTIOP_BLUEFORMW, 27);
+#endif
 
 		addMultiBut(psWScreen, MULTIOP_STRUCTLIMITS, MULTIOP_LIMITS_BUT, MCOL3, 4, MULTIOP_BUTW, MULTIOP_BUTH,
 					 challengeActive ? _("Show Structure Limits") : _("Set Structure Limits"), IMAGE_SLIM, IMAGE_SLIM_HI, IMAGE_SLIM_HI);
@@ -2462,7 +2703,6 @@ static bool canChooseTeamFor(int i)
 
 //NEW
 #ifdef AD_LOBBY_CONNECTION
-#define MAX_PLAYERS_PER_LIST 10
 
 void RefreshUserTab(WIDGET *psWidget, W_CONTEXT *psContext)
 {
@@ -2476,10 +2716,8 @@ void RefreshUserTab(WIDGET *psWidget, W_CONTEXT *psContext)
 #ifdef AD_LOBBY_CONNECTION
 void addOnlineListBox(bool refresh, int tab)
 {
-	static char		tips[512][MAX_STR_LENGTH];
-	W_FORMINIT		sFormInit;
-
-	if(widgGetFromID(psWScreen, FRONTEND_BACKDROP) == NULL)
+	WIDGET *ppsWidget = widgGetFromID(psWScreen, FRONTEND_BACKDROP);
+	if(ppsWidget == NULL)
 	{
 		return;
 	}
@@ -2489,40 +2727,46 @@ void addOnlineListBox(bool refresh, int tab)
 		widgDelete(psWScreen, MULTIOP_PLAYER_COUNT);
 	}
 
-	addText(MULTIOP_PLAYER_COUNT, MULTIOP_OPTIONSX + MULTIOP_CHATBOXW + (MULTIOP_PLAYERWIDTH - MULTIOP_TEAMSWIDTH - MULTIOP_READY_WIDTH - MULTIOP_COLOUR_WIDTH + 20) / 2, 
-		MULTIOP_CHATBOXY + MULTIOP_CHATBOXH - 10, std::string(std::to_string((long long)GetPlayerCount()) + std::string(" Players are online.")).c_str(), 
+	addText(MULTIOP_PLAYER_COUNT, MULTIOP_OPTIONSX + MULTIOP_CHATBOXW + (MULTIOP_PLAYERWIDTH - MULTIOP_TEAMSWIDTH - MULTIOP_READY_WIDTH - MULTIOP_COLOUR_WIDTH + 10) / 2, 
+		MULTIOP_CHATBOXY + MULTIOP_CHATBOXH - 10, std::string(std::to_string((uint64_t)GetPlayerCount()) + std::string(" Players are online.")).c_str(), 
 		FRONTEND_BACKDROP);
 
 	if(!refresh)
 	{
+		//iV_DrawImage(IntImages, IMAGE_TITLEBOX, 1000, 1000);
 		//widgDelete(psWScreen,MULTIOP_PLAYERLIST);
 
+		W_FORMINIT	sFormInit;
 		sFormInit.formID = FRONTEND_BACKDROP;
 		sFormInit.id = MULTIOP_PLAYERLIST;
 		sFormInit.x = MULTIOP_OPTIONSX + MULTIOP_CHATBOXW;
 		sFormInit.y = 1;
 		sFormInit.style = WFORM_PLAIN;
-		sFormInit.width = MULTIOP_PLAYERWIDTH - MULTIOP_TEAMSWIDTH - MULTIOP_READY_WIDTH - MULTIOP_COLOUR_WIDTH + 20;
+		sFormInit.width = MULTIOP_PLAYERWIDTH - MULTIOP_TEAMSWIDTH - MULTIOP_READY_WIDTH - MULTIOP_COLOUR_WIDTH + 5;
 		sFormInit.height = MULTIOP_CHATBOXY + MULTIOP_CHATBOXH - 1;
 		sFormInit.pDisplay = intDisplayPlainForm;
 		widgAddForm(psWScreen, &sFormInit);
+
+		ppsWidget = widgGetFromID(psWScreen, MULTIOP_PLAYERLIST);
 
 		sFormInit = W_FORMINIT();
 		sFormInit.formID = MULTIOP_PLAYERLIST;
 		sFormInit.id = MULTIOP_PLAYER_TAB;
 		sFormInit.style = WFORM_TABBED;
-		sFormInit.x = 2;
+		sFormInit.x = -3;
 		sFormInit.y = 2;
 		sFormInit.width = MULTIOP_PLAYERSW;
 		sFormInit.height = MULTIOP_PLAYERSH-4;
 
-		sFormInit.numMajor = 5;
+		sFormInit.numMajor = 6;
+		sFormInit.numButtons = 10;
 
 		sFormInit.majorPos = WFORM_TABTOP;
 		sFormInit.minorPos = WFORM_TABNONE;
-		sFormInit.majorSize = OBJ_TABWIDTH+2;
+		sFormInit.majorSize = OBJ_TABWIDTH-2;
 		sFormInit.majorOffset = OBJ_TABOFFSET;
 		sFormInit.tabVertOffset = (OBJ_TABHEIGHT/2);
+		sFormInit.tabMinorGap = 4;
 		sFormInit.tabMajorThickness = OBJ_TABHEIGHT;
 		sFormInit.pUserData = &StandardTab;
 		sFormInit.pTabDisplay = intDisplayTab;
@@ -2540,7 +2784,7 @@ void addOnlineListBox(bool refresh, int tab)
 
 		for (int i = 0; i < sFormInit.numMajor; ++i)
 		{
-			sFormInit.aNumMinors[i] = 2;
+			sFormInit.aNumMinors[i] = 1;
 		}
 
 		widgAddForm(psWScreen, &sFormInit);
@@ -2548,65 +2792,65 @@ void addOnlineListBox(bool refresh, int tab)
 		W_BUTINIT sButInit;
 		sButInit = W_BUTINIT();
 		sButInit.formID		= MULTIOP_PLAYER_TAB;
-		sButInit.id		= MULTIOP_P_LIST_START;
-		sButInit.x		= 18;
-		sButInit.y		= 18;
+		sButInit.id			= MULTIOP_P_LIST_START;
+		sButInit.x			= 0;
+		sButInit.y			= 18;
 		sButInit.width		= 125;
-		sButInit.height		= MULTIOP_PLAYERHEIGHT;
+		sButInit.height		= MULTIOP_PLAYERHEIGHT+10;
 		sButInit.pUserData	= NULL;
 		sButInit.pDisplay	= displayPlayerLobby;
-
-		for(unsigned int i = 0; i < sFormInit.numMajor*MAX_PLAYERS_PER_LIST; ++i)
+		BeginRead();
 		{
-			//strcpy(tips[i], pGetLobbyPlayerList()->at(i)->name);
-			sButInit.UserData = 1;
-			sButInit.pUserData = pGetLobbyPlayerList()->size() > i ? (void*)pGetLobbyPlayerList()->at(i) : NULL;
-			sButInit.pText = sButInit.pUserData == NULL ? "Free" : (pGetLobbyPlayerList()->at(i)->status == 1 ? "Player not in lobby" : "Player currently in lobby");
-			sButInit.pTip = sButInit.pUserData == NULL ? "Free" : (pGetLobbyPlayerList()->at(i)->status == 1 ? "Player not in lobby" : "Player currently in lobby");
-			widgAddButton(psWScreen, &sButInit);
+			for(unsigned int i = 0; i < sFormInit.numMajor*MAX_PLAYERS_PER_LIST; ++i)
+			{
+				sButInit.UserData = 1;
+				sButInit.pUserData = pGetLobbyPlayerList()->size() > i ? (void*)GetPlayer(i) : NULL;
+				sButInit.pText = sButInit.pUserData == NULL ? "Free" : (GetPlayer(i)->status == 1 ? "Player not in lobby" : "Player currently in lobby");
+				sButInit.pTip = sButInit.pUserData == NULL ? "Free" : (GetPlayer(i)->status == 1 ? "Player not in lobby" : "Player currently in lobby");
+				widgAddButton(psWScreen, &sButInit);
 
-			sButInit.id += 1;
-			sButInit.x = (SWORD)(sButInit.x + (150+ 4));
-			if (sButInit.x + 150+ 2 > MULTIOP_PLAYERSW)
-			{
-				sButInit.x = 18;
-				sButInit.y = (SWORD)(sButInit.y + 42);
-			}
-			if (sButInit.y + 50 > 450)
-			{
-				sButInit.y = 18;
-				sButInit.majorID += 1;
+				sButInit.id += 1;
+				{
+					sButInit.x = 0;
+					sButInit.y = (SWORD)(sButInit.y + 42);
+				}
+				if (sButInit.y + 50 > 450)
+				{
+					sButInit.y = 18;
+					sButInit.majorID += 1;
+				}
 			}
 		}
+		EndRead();
 	}
 
 	int count = 0;
-
+	WIDGET *psWidget = NULL;
 	if(refresh)
 	{
-		WIDGET *psWidget = NULL;
-		for(unsigned int i = pGetLobbyPlayerList()->size(); i != -1; i--)
+		BeginRead();
 		{
-			if(!psWidget)
+			for(unsigned int i = std::min((size_t)MAX_PLAYERS_PER_LIST * 6, pGetLobbyPlayerList()->size()); i != -1; i--)
 			{
-				psWidget = widgGetFromID(psWScreen, MULTIOP_P_LIST_START + i);
-			}
-			if(psWidget)
-			{
-				W_BUTTON *psBut = (W_BUTTON*)psWidget;
-				psBut->UserData = count + (10*tab);
-				psBut->pUserData = pGetLobbyPlayerList()->size() > i ? (void*)pGetLobbyPlayerList()->at(i) : NULL;
-				psBut->pText = psBut->pUserData == NULL ? "Free" : (pGetLobbyPlayerList()->at(i)->status == 1 ? "Player not in lobby" : "Player currently in lobby");
-				psBut->pTip = psBut->pUserData == NULL ? "Free" : (pGetLobbyPlayerList()->at(i)->status == 1 ? "Player not in lobby" : "Player currently in lobby");
-				psWidget = psWidget->psNext;
-
-				if(psWidget == NULL)
+				if(!psWidget)
 				{
-					break;
+					psWidget = widgGetFromID(psWScreen, MULTIOP_P_LIST_START + i);
 				}
-			}
-		};
+				if(psWidget)
+				{
+					W_BUTTON *psBut = (W_BUTTON*)psWidget;
+					psBut->UserData = count + (10*tab);
+					psBut->pUserData = GetPlayer(i);
+					psBut->pText = GetPlayer(i) == NULL ? "Free" : (GetPlayer(i)->status == 1 ? "Player not in lobby" : "Player currently in lobby");
+					psBut->pTip = GetPlayer(i) == NULL ? "Free" : (GetPlayer(i)->status == 1 ? "Player not in lobby" : "Player currently in lobby");
+					psWidget = NULL;
+				}
+			};
+		}
+		EndRead();
 	}
+
+	//intDisplayTabForm((WIDGET*)&sFormInit, 1263, 300+1, 15, 1427-1263-15, NULL);
 }
 #endif
 //NEW
@@ -3048,6 +3292,13 @@ static void processMultiopWidgets(UDWORD id)
 		case MULTIOP_MAP_BUT:
 			loadMapPreview(true);
 			break;
+
+#ifdef AD_LOBBY_CONNECTION
+		case MULTIOP_LOBBY:
+			changeTitleMode(GAMEFIND);
+			pie_LoadBackDrop(SCREENTYPE::SCREEN_CREDITS);
+			break;
+#endif
 		}
 	}
 
@@ -3233,6 +3484,64 @@ static void processMultiopWidgets(UDWORD id)
 				NETGameLocked(willSet);
 			}
 			break;
+#ifdef AD_LOBBY_CONNECTION
+		case MULTIOP_ALL_RANK:
+			{
+				widgSetButtonState(psWScreen, MULTIOP_RANK_1,0);
+				widgSetButtonState(psWScreen, MULTIOP_RANK_2,0);
+				widgSetButtonState(psWScreen, MULTIOP_RANK_3,0);
+				widgSetButtonState(psWScreen, MULTIOP_ALL_RANK,WBUT_LOCK);
+				game.rank = 0;
+
+				if(bHosted)
+				{
+					sendOptions();
+				}
+				break;
+			}
+		case MULTIOP_RANK_1:
+			{
+				widgSetButtonState(psWScreen, MULTIOP_RANK_1,WBUT_LOCK);
+				widgSetButtonState(psWScreen, MULTIOP_RANK_2,0);
+				widgSetButtonState(psWScreen, MULTIOP_RANK_3,0);
+				widgSetButtonState(psWScreen, MULTIOP_ALL_RANK,0);
+				game.rank = 1;
+
+				if(bHosted)
+				{
+					sendOptions();
+				}
+				break;
+			}
+		case MULTIOP_RANK_2:
+			{
+				widgSetButtonState(psWScreen, MULTIOP_RANK_1,0);
+				widgSetButtonState(psWScreen, MULTIOP_RANK_2,WBUT_LOCK);
+				widgSetButtonState(psWScreen, MULTIOP_RANK_3,0);
+				widgSetButtonState(psWScreen, MULTIOP_ALL_RANK,0);
+				game.rank = 2;
+
+				if(bHosted)
+				{
+					sendOptions();
+				}
+				break;
+			}
+		case MULTIOP_RANK_3:
+			{
+				widgSetButtonState(psWScreen, MULTIOP_RANK_1,0);
+				widgSetButtonState(psWScreen, MULTIOP_RANK_2,0);
+				widgSetButtonState(psWScreen, MULTIOP_RANK_3,WBUT_LOCK);
+				widgSetButtonState(psWScreen, MULTIOP_ALL_RANK,0);
+				game.rank = 3;
+
+				if(bHosted)
+				{
+					sendOptions();
+				}
+				break;
+			}
+#endif
 		}
 	}
 
@@ -4216,6 +4525,7 @@ void displayChatEdit(WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset, PIELIGHT 
 // ////////////////////////////////////////////////////////////////////////////
 void displayRemoteGame(WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset, PIELIGHT *pColours)
 {
+	bool rankFits = false;
 	UDWORD x = xOffset + psWidget->x;
 	UDWORD y = yOffset + psWidget->y;
 	UDWORD	gameID = psWidget->UserData;
@@ -4226,6 +4536,46 @@ void displayRemoteGame(WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset, PIELIGH
 		addConsoleMessage(_("Can't connect to lobby server!"), DEFAULT_JUSTIFY, NOTIFY_MESSAGE);
 		return;
 	}
+
+#ifdef AD_LOBBY_CONNECTION	
+	if(NetPlay.games[gameID].rank)
+	{
+		PLAYERSTATS stat;
+		loadMultiStats(sPlayer, &stat);
+
+		if ((stat.wins >= 6) && (stat.wins > (2 * stat.losses))) // bronze requirement.
+		{
+			if(NetPlay.games[gameID].rank == 1)
+			{
+				rankFits = true;
+			}
+			if ((stat.wins >= 12) && (stat.wins > (4 * stat.losses))) // silver requirement.
+			{
+				if(NetPlay.games[gameID].rank < 3)
+				{
+					rankFits = true;
+				}
+				if ((stat.wins >= 24) && (stat.wins > (8 * stat.losses))) // gold requirement
+				{
+					rankFits = true;
+					iV_DrawImage(FrontImages, IMAGE_MEDAL_GOLD, x + 16, y + 11);
+				}
+				else
+				{
+					iV_DrawImage(FrontImages, IMAGE_MEDAL_SILVER, x + 16, y + 11);
+				}
+			}
+			else
+			{
+				iV_DrawImage(FrontImages, IMAGE_MEDAL_BRONZE, x + 16, y + 11);
+			}
+		}
+	}
+	else
+	{
+		rankFits = true;
+	}
+#endif
 
 	// Draw blue boxes for games (buttons) & headers
 	drawBlueBox(x, y, psWidget->width, psWidget->height);
@@ -4267,6 +4617,13 @@ void displayRemoteGame(WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset, PIELIGH
 				statusStart = IMAGE_LOCKED_NOBG;
 				lamp = IMAGE_LAMP_AMBER;
 			}
+#ifdef AD_LOBBY_CONNECTION
+			if(!rankFits)
+			{
+				statusStart = IMAGE_NOJOIN_FULL;
+				lamp = IMAGE_LAMP_RED;
+			}
+#endif
 		}
 
 		ssprintf(tmp, "%d/%d", NetPlay.games[gameID].desc.dwCurrentPlayers, NetPlay.games[gameID].desc.dwMaxPlayers);
@@ -4282,6 +4639,18 @@ void displayRemoteGame(WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset, PIELIGH
 			if(NetPlay.games[gameID].limits & NO_VTOLS)
 				iV_DrawImage(FrontImages, IMAGE_NO_VTOL, x + GAMES_STATUS_START + (37 * 3) , y + 2);
 		}
+#ifdef AD_LOBBY_CONNECTION
+		if(NetPlay.games[gameID].rank)
+		{
+			if(NetPlay.games[gameID].rank < 4)
+			{
+				for(int i = 0; i < 5; ++i)
+				{
+					iV_DrawImage(FrontImages, NetPlay.games[gameID].rank == 3 ? IMAGE_MULTIRANK1 : NetPlay.games[gameID].rank == 2 ? IMAGE_MULTIRANK2 : NetPlay.games[gameID].rank == 1 ? IMAGE_MULTIRANK3 : IMAGE_MULTIRANK1, x + GAMES_STATUS_START + 37 + 10 * i, y + 7);
+				}
+			}
+		}
+#endif
 	}
 	// Draw type overlay.
 	iV_DrawImage(FrontImages, statusStart, x + GAMES_STATUS_START, y + 3);
@@ -4361,8 +4730,13 @@ void displayRemoteGame(WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset, PIELIGH
 	 iV_DrawText(tmp, x - 2 + GAMES_MAPNAME_START + 48, y - 3);
 	 ssprintf(tmp, "Players");
 	 iV_DrawText(tmp, x - 2 + GAMES_PLAYERS_START, y - 3);
+#ifdef AD_LOBBY_CONNECTION
+	 ssprintf(tmp, "Status | Rank requirements");
+	 iV_DrawText(tmp, x - 2 + GAMES_STATUS_START + 25, y - 3);
+#else
 	 ssprintf(tmp, "Status");
 	 iV_DrawText(tmp, x - 2 + GAMES_STATUS_START + 48, y - 3);
+#endif
 	}
 }
 
@@ -4449,9 +4823,12 @@ void displayPlayerLobby(WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset, PIELIG
 	light.byte.g = 0;
 	light.byte.r = 0;
 
-	const int nameX = 32;
+	const int nameX = 32 + 20;
 
-	drawBlueBox(x,y,psWidget->width,psWidget->height);
+	//drawBlueBox(x,y,psWidget->width,psWidget->height);
+	{
+		iV_DrawImage(IntImages, IMAGE_TITLEBOX, x, y);
+	}
 
 	if(j != -1)
 	{
@@ -4464,14 +4841,14 @@ void displayPlayerLobby(WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset, PIELIG
 
 		if(p->status == 0) // in lobby
 		{
-			light.byte.g = 255;
+			iV_DrawImage(IntImages, IMAGE_TITLEBOX, x, y);
 		}
 		else
 		{
-			light.byte.r = 255;
+			iV_DrawImage(IntImages, IMAGE_TITLEBOX_RED, x, y);
 		}
 
-		drawBlueBox(x,y,psWidget->width,psWidget->height,light);
+		//drawBlueBox(x,y,psWidget->width,psWidget->height,light);
 
 		iV_SetFont(font_regular);
 		if(p->status == 0) //ordinary player
@@ -4495,6 +4872,8 @@ void displayPlayerLobby(WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset, PIELIG
 		}
 		std::string subText;
 
+		y = y + 2;
+
 		iV_DrawText(name.c_str(), x + nameX, y + (subText.empty()? 22 : 18));
 		if (!subText.empty())
 		{
@@ -4504,6 +4883,8 @@ void displayPlayerLobby(WIDGET *psWidget, UDWORD xOffset, UDWORD yOffset, PIELIG
 			iV_SetFont(font_regular);
 			iV_SetTextColour(WZCOL_FORM_TEXT);
 		}
+
+		x = x + 20;
 
 		PLAYERSTATS stat = p->rank;
 		if(stat.wins + stat.losses < 5)

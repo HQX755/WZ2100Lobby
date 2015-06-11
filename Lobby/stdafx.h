@@ -16,6 +16,9 @@
 #include <boost/any.hpp>
 #include <boost/algorithm/cxx11/any_of.hpp>
 #include <boost/algorithm/string.hpp>
+#include <boost/make_shared.hpp>
+
+#include <minmax.h>
 
 #include <stdint.h>
 

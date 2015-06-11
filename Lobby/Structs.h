@@ -62,4 +62,31 @@ struct PLAYERSTATS
 	uint32_t recentScore;
 };
 
+struct VERSION
+{
+	uint32_t versionMinor;
+	uint32_t versionMajor;
+	char	 versionString[10];
+	bool operator==(VERSION &other)
+	{
+		if(other.versionMinor == versionMinor && other.versionMajor == versionMajor &&
+			strcmp(other.versionString, versionString) == 0)
+		{
+			return true;
+		}
+
+		return false;
+	}
+	bool operator!=(VERSION &other)
+	{
+		if(other.versionMinor != versionMinor || other.versionMajor != versionMajor ||
+			strcmp(other.versionString, versionString) != 0)
+		{
+			return true;
+		}
+
+		return false;
+	}
+};
+
 #endif
